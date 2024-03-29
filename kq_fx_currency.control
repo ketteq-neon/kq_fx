@@ -1,5 +1,5 @@
-comment = 'kq_fx_currency:  Created by pgrx'
+comment = 'kq_fx_currency:  ketteQ, Inc.'
 default_version = '@CARGO_VERSION@'
 module_pathname = '$libdir/kq_fx_currency'
 relocatable = false
-superuser = true
+superuser = false
