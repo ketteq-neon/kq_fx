@@ -9,7 +9,7 @@ all users in the same schema.
 # Installation
 
 Build the extension using included `cargo` build flow with the release option. After the shared 
-library is built, install it manually or use the included `cargo install` script to do it automatically
+library is built, install it manually or use the included `cargo pgrx install` script to do it automatically
 in the local server installation.
 
 This extension uses PostgreSQL shared memory features, and so it must be loaded using the 
@@ -20,7 +20,7 @@ executing the `CREATE EXTENSION` query.
 
 The PGRX build system allows to target different PostgreSQL version automatically adjusting the output for them.
 
-Enabled by this extension: PostgreSQL 14, 15 and 16 (default).
+Supported by this extension: PostgreSQL 15 and 16 (default).
 
 See the Build section to target a different PostgreSQL version, please note that if you use the automatic installer
 provided by the PGRX crate it will use the correct target PostgreSQL version.
