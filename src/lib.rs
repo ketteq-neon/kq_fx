@@ -6,20 +6,26 @@ use pgrx::{pg_shmem_init, debug1, error};
 use pgrx::lwlock::PgLwLock;
 use pgrx::spi::SpiResult;
 
+// Max allocation params
+
 const MAX_ENTRIES: usize = 8 * 1024;
 const MAX_CURRENCIES: usize = 1 * 1024;
+
+// Default Queries
 
 const DEFAULT_VALIDATION_QUERY: &str = r#"SELECT count(table_name) = 2
 FROM information_schema.tables
 WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
 
 const DEFAULT_GET_CURRENCIES_IDS: &str = r#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
+
 const DEFAULT_GET_CURRENCIES_ENTRY_COUNT: &str = r#"SELECT cu.currency_id,
 (SELECT LOWER(cu.\"xuid\") FROM plan.currency cu WHERE cu.id = cr.currency_id) \"xuid\,
 count(*)
 FROM plan.fx_rate cr
 GROUP by cr.currency_id
 ORDER by cr.currency_id asc;"#;
+
 const DEFAULT_GET_CURRENCY_ENTRIES: &str = r#"SELECT cr.currency_id, cr.to_currency_id, cr.rate cr.\"date\"
 from plan.fx_rate cr
 order by cr.currency_id asc, cr.\"date\" asc;"#;
@@ -28,7 +34,6 @@ order by cr.currency_id asc, cr.\"date\" asc;"#;
 ::pgrx::pg_module_magic!();
 
 // Control Struct
-
 #[derive(Copy, Clone)]
 pub struct CurrencyControl {
     currency_count: i32,
@@ -36,7 +41,6 @@ pub struct CurrencyControl {
     min_currency_id: i8,
     cache_filled: bool,
 }
-
 impl Default for CurrencyControl {
     fn default() -> Self {
         CurrencyControl {
@@ -47,11 +51,9 @@ impl Default for CurrencyControl {
         }
     }
 }
-
 unsafe impl PGRXSharedMemory for CurrencyControl {}
 
 // Currency Metadata Struct
-
 #[derive(Copy, Clone,  Debug)]
 pub struct Currency {
     id: i8,
@@ -61,7 +63,6 @@ pub struct Currency {
     first_page_offset: i32,
     page_map_size: i32,
 }
-
 impl Default for Currency {
     fn default() -> Self {
         Currency {
@@ -74,27 +75,21 @@ impl Default for Currency {
         }
     }
 }
-
 unsafe impl PGRXSharedMemory for Currency {}
 
 // Shared Memory Hashmaps
-static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
 
+static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
 /// [CURRENCY_ID, CURRENCY_XUID]
 static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i8, MAX_CURRENCIES>> = PgLwLock::new();
-
 /// [CURRENCY_ID, CURRENCY_METADATA]
 static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i8, Currency, MAX_CURRENCIES>> = PgLwLock::new();
-
 /// [CURRENCY_ID, PAGE_MAP[]]
 static CURRENCY_ID_PAGE_MAP: PgLwLock<heapless::FnvIndexMap<i8, heapless::Vec<i32, MAX_ENTRIES>, MAX_CURRENCIES>> = PgLwLock::new();
-
 /// [FROM_CURRENCY_ID, TO_CURRENCY_ID, DATE]
 static CURRENCY_ID_DATE_MAP: PgLwLock<heapless::FnvIndexMap<i8, heapless::FnvIndexMap<i8, i32, MAX_CURRENCIES>, MAX_CURRENCIES>> = PgLwLock::new();
-
 /// [FROM_CURRENCY_ID, TO_CURRENCY_ID, RATE]
 static CURRENCY_ID_RATES_MAP: PgLwLock<heapless::FnvIndexMap<i8, heapless::FnvIndexMap<i8, f32, MAX_CURRENCIES>, MAX_CURRENCIES>> = PgLwLock::new();
-
 
 // Init Extension - Shared Memory
 #[pg_guard]
