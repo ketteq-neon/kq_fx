@@ -100,6 +100,12 @@ pub extern "C" fn _PG_init() {
     pg_shmem_init!(CURRENCY_ID_DATE_MAP);
     pg_shmem_init!(CURRENCY_ID_RATES_MAP);
     pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
+    info!("ketteQ FX Currency Cache Extension Loaded (kq_fx_currency)");
+}
+
+#[pg_guard]
+pub extern "C" fn _PG_fini() {
+    info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx_currency)");
 }
 
 // Cache management internals
