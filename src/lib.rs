@@ -100,8 +100,6 @@ pub extern "C" fn _PG_init() {
     pg_shmem_init!(CURRENCY_ID_DATE_MAP);
     pg_shmem_init!(CURRENCY_ID_RATES_MAP);
     pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
-
-    cache_init();
 }
 
 // Cache management internals
@@ -172,6 +170,7 @@ fn ensure_cache_populated() {
         }
     )
     // TODO: Get Currency Entries
+
 }
 
 // fn cache_insert(id: i8, xuid: &'static str, value: f32) {
@@ -190,6 +189,7 @@ fn ensure_cache_populated() {
 //     Some(10.1f32)
 // }
 
+/// This method prevents using the extension in incompatible schemas.
 fn validate_compatible_db() {
     debug1!("Validating database compatibility...");
     let spi_result: SpiResult<Option<bool>> = Spi::get_one(DEFAULT_VALIDATION_QUERY);
@@ -201,13 +201,13 @@ fn validate_compatible_db() {
                 }
                 Some(valid) => {
                     if !valid {
-                        error!("The current database is not compatible with the KetteQ FX Currency Cache extension.")
+                        error!("The current schema is not compatible with the KetteQ FX Currency Cache extension.")
                     }
                 }
             }
         }
         Err(spi_error) => {
-            error!("Cannot validate current database {}", spi_error)
+            error!("Cannot validate current database. {}", spi_error)
         }
     }
 }
