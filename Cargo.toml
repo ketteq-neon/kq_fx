@@ -15,8 +15,8 @@ pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
 pg_test = []
 
 [dependencies]
-heapless = "0.7.17"
-pgrx = { version =  "0.11.3", default-features = false }
+heapless = "=0.7.17"
+pgrx = { version =  "=0.11.3", default-features = false }
 
 [dev-dependencies]
 pgrx-tests = "0.11.3"

@@ -1,8 +1,9 @@
 mod currency;
 
+use std::ffi::{CStr, CString};
 use pgrx::prelude::*;
 use pgrx::shmem::*;
-use pgrx::{pg_shmem_init, debug1, error};
+use pgrx::{pg_shmem_init, debug1, error, GucSetting, GucContext, GucFlags, GucRegistry};
 use pgrx::lwlock::PgLwLock;
 use pgrx::spi::SpiResult;
 
@@ -13,7 +14,11 @@ const MAX_CURRENCIES: usize = 1 * 1024;
 
 // Default Queries
 
-const DEFAULT_VALIDATION_QUERY: &str = r#"SELECT count(table_name) = 2
+// const DEFAULT_VALIDATION_QUERY: &str = r#"SELECT count(table_name) = 2
+// FROM information_schema.tables
+// WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
+
+const DEFAULT_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
 FROM information_schema.tables
 WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
 
@@ -29,6 +34,14 @@ ORDER by cr.currency_id asc;"#;
 const DEFAULT_GET_CURRENCY_ENTRIES: &str = r#"SELECT cr.currency_id, cr.to_currency_id, cr.rate cr.\"date\"
 from plan.fx_rate cr
 order by cr.currency_id asc, cr.\"date\" asc;"#;
+
+// GUCs
+
+static Q1_VALIDATION_QUERY: GucSetting<Option<&'static CStr>> = GucSetting::<Option<&'static CStr>>::new(
+    Some(unsafe {
+        DEFAULT_VALIDATION_QUERY
+    })
+);
 
 // Activate PostgreSQL Extension
 ::pgrx::pg_module_magic!();
@@ -100,6 +113,9 @@ pub extern "C" fn _PG_init() {
     pg_shmem_init!(CURRENCY_ID_DATE_MAP);
     pg_shmem_init!(CURRENCY_ID_RATES_MAP);
     pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
+    unsafe {
+        init_gucs();
+    }
     info!("ketteQ FX Currency Cache Extension Loaded (kq_fx_currency)");
 }
 
@@ -108,7 +124,21 @@ pub extern "C" fn _PG_fini() {
     info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx_currency)");
 }
 
+unsafe fn init_gucs() {
+    // let c_string = CString::new(DEFAULT_VALIDATION_QUERY.as_bytes()).unwrap();
+    // const c_str : &CStr = CString::new(DEFAULT_VALIDATION_QUERY.as_bytes()).unwrap().as_c_str();
+    GucRegistry::define_string_guc(
+        "kq.currency.q1_validation",
+        "Query to validate the current schema in order to create the ketteQ FX Currency Cache Extension.",
+        "",
+        &Q1_VALIDATION_QUERY,
+        GucContext::Suset,
+        GucFlags::empty()
+    );
+}
+
 // Cache management internals
+
 
 fn cache_init() {
     debug1!("cache_init()");
@@ -195,10 +225,15 @@ fn ensure_cache_populated() {
 //     Some(10.1f32)
 // }
 
+fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
+    String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes()).to_string().replace('\n', " ")
+}
+
 /// This method prevents using the extension in incompatible schemas.
 fn validate_compatible_db() {
-    debug1!("Validating database compatibility...");
-    let spi_result: SpiResult<Option<bool>> = Spi::get_one(DEFAULT_VALIDATION_QUERY);
+    let query = get_guc_string(&Q1_VALIDATION_QUERY);
+    debug1!("Validating database compatibility... Query: {query}");
+    let spi_result: SpiResult<Option<bool>> = Spi::get_one(&query);
     match spi_result {
         Ok(found_tables_opt) => {
             match found_tables_opt {
@@ -219,6 +254,11 @@ fn validate_compatible_db() {
 }
 
 // Exported Functions
+
+#[pg_extern]
+fn kq_fx_check_db() {
+    validate_compatible_db();
+}
 
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
