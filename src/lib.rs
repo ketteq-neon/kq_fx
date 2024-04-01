@@ -1,6 +1,6 @@
 mod currency;
 
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr};
 use pgrx::prelude::*;
 use pgrx::shmem::*;
 use pgrx::{pg_shmem_init, debug1, error, GucSetting, GucContext, GucFlags, GucRegistry};
@@ -18,28 +18,46 @@ const MAX_CURRENCIES: usize = 1 * 1024;
 // FROM information_schema.tables
 // WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
 
-const DEFAULT_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
+const DEFAULT_Q1_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
 FROM information_schema.tables
 WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
 
-const DEFAULT_GET_CURRENCIES_IDS: &str = r#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
+const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr = cr#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
 
-const DEFAULT_GET_CURRENCIES_ENTRY_COUNT: &str = r#"SELECT cu.currency_id,
-(SELECT LOWER(cu.\"xuid\") FROM plan.currency cu WHERE cu.id = cr.currency_id) \"xuid\,
+const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.currency_id,
+(SELECT LOWER(cu.\"xuid\") FROM plan.currency cu WHERE cu.id = cr.currency_id) \"xuid\",
 count(*)
 FROM plan.fx_rate cr
 GROUP by cr.currency_id
 ORDER by cr.currency_id asc;"#;
 
-const DEFAULT_GET_CURRENCY_ENTRIES: &str = r#"SELECT cr.currency_id, cr.to_currency_id, cr.rate cr.\"date\"
+const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr = cr#"SELECT cr.currency_id, cr.to_currency_id, cr.rate cr.\"date\"
 from plan.fx_rate cr
 order by cr.currency_id asc, cr.\"date\" asc;"#;
 
-// GUCs
+// Query GUCs
 
 static Q1_VALIDATION_QUERY: GucSetting<Option<&'static CStr>> = GucSetting::<Option<&'static CStr>>::new(
     Some(unsafe {
-        DEFAULT_VALIDATION_QUERY
+        DEFAULT_Q1_VALIDATION_QUERY
+    })
+);
+
+static Q2_GET_CURRENCIES_IDS: GucSetting<Option<&'static CStr>> = GucSetting::<Option<&'static CStr>>::new(
+    Some(unsafe {
+        DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY
+    })
+);
+
+static Q3_GET_CURRENCIES_ENTRY_COUNT: GucSetting<Option<&'static CStr>> = GucSetting::<Option<&'static CStr>>::new(
+    Some(unsafe {
+        DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT
+    })
+);
+
+static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> = GucSetting::<Option<&'static CStr>>::new(
+    Some(unsafe {
+        DEFAULT_Q4_GET_CURRENCY_ENTRIES
     })
 );
 
@@ -125,13 +143,35 @@ pub extern "C" fn _PG_fini() {
 }
 
 unsafe fn init_gucs() {
-    // let c_string = CString::new(DEFAULT_VALIDATION_QUERY.as_bytes()).unwrap();
-    // const c_str : &CStr = CString::new(DEFAULT_VALIDATION_QUERY.as_bytes()).unwrap().as_c_str();
     GucRegistry::define_string_guc(
         "kq.currency.q1_validation",
         "Query to validate the current schema in order to create the ketteQ FX Currency Cache Extension.",
         "",
         &Q1_VALIDATION_QUERY,
+        GucContext::Suset,
+        GucFlags::empty()
+    );
+    GucRegistry::define_string_guc(
+        "kq.currency.q2_get_currencies_ids",
+        "",
+        "",
+        &Q2_GET_CURRENCIES_IDS,
+        GucContext::Suset,
+        GucFlags::empty()
+    );
+    GucRegistry::define_string_guc(
+        "kq.currency.q3_get_currencies_entry_count",
+        "",
+        "",
+        &Q3_GET_CURRENCIES_ENTRY_COUNT,
+        GucContext::Suset,
+        GucFlags::empty()
+    );
+    GucRegistry::define_string_guc(
+        "kq.currency.q4_get_currency_entries",
+        "",
+        "",
+        &Q4_GET_CURRENCY_ENTRIES,
         GucContext::Suset,
         GucFlags::empty()
     );
@@ -154,7 +194,7 @@ fn ensure_cache_populated() {
         return;
     }
     // Currency Min and Max ID
-    let currency_min_max: SpiResult<(Option<i32>, Option<i32>)> = Spi::get_two(DEFAULT_GET_CURRENCIES_IDS);
+    let currency_min_max: SpiResult<(Option<i32>, Option<i32>)> = Spi::get_two(&get_guc_string(&Q2_GET_CURRENCIES_IDS));
     let (min_id, max_id): (i32, i32) = match currency_min_max {
         Ok(values) => {
             (values.0.unwrap(), values.1.unwrap())
@@ -171,7 +211,7 @@ fn ensure_cache_populated() {
     // Load Currencies (id, xuid and entry count)
     Spi::connect(
         |client| {
-            let select = client.select(DEFAULT_GET_CURRENCIES_ENTRY_COUNT, None, None);
+            let select = client.select(&get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
             match select {
                 Ok(tuple_table) => {
                     for row in tuple_table {
@@ -229,8 +269,8 @@ fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
     String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes()).to_string().replace('\n', " ")
 }
 
-/// This method prevents using the extension in incompatible schemas.
-fn validate_compatible_db() {
+/// This method prevents using the extension in incompatible databases.
+fn validate_compatible_db() -> &'static str {
     let query = get_guc_string(&Q1_VALIDATION_QUERY);
     debug1!("Validating database compatibility... Query: {query}");
     let spi_result: SpiResult<Option<bool>> = Spi::get_one(&query);
@@ -238,11 +278,13 @@ fn validate_compatible_db() {
         Ok(found_tables_opt) => {
             match found_tables_opt {
                 None => {
-                    debug1!("Valid database.")
+                    error!("The current database is not compatible with the KetteQ FX Currency Cache extension.")
                 }
                 Some(valid) => {
                     if !valid {
-                        error!("The current schema is not compatible with the KetteQ FX Currency Cache extension.")
+                        error!("The current database is not compatible with the KetteQ FX Currency Cache extension.")
+                    } else {
+                        "Database is compatible with the extension."
                     }
                 }
             }
@@ -256,8 +298,8 @@ fn validate_compatible_db() {
 // Exported Functions
 
 #[pg_extern]
-fn kq_fx_check_db() {
-    validate_compatible_db();
+fn kq_fx_check_db() -> &'static str {
+    validate_compatible_db()
 }
 
 #[pg_extern]
