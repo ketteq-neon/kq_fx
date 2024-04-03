@@ -29,7 +29,7 @@ GROUP by cr.currency_id
 ORDER by cr.currency_id asc;"#;
 
 const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
-    cr#"SELECT cr.currency_id, cr.to_currency_id, cr.\"date\, cr.rate"
+    cr#"SELECT cr.currency_id, cr.to_currency_id, cr.\"date\", cr.rate"
 from plan.fx_rate cr
 order by cr.currency_id asc, cr.\"date\" asc;"#;
 
