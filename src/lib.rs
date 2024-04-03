@@ -161,12 +161,12 @@ unsafe fn init_gucs() {
 
 fn ensure_cache_populated() {
     debug1!("ensure_cache_populated()");
-    validate_compatible_db();
     let control = CURRENCY_CONTROL.share().clone();
     if control.cache_filled {
         debug1!("Cache already filled. Skipping loading from DB.");
         return;
     }
+    validate_compatible_db();
     // Currency Min and Max ID
     let currency_min_max: SpiResult<(Option<i64>, Option<i64>)> =
         Spi::get_two(&get_guc_string(&Q2_GET_CURRENCIES_IDS));
