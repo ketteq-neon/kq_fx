@@ -9,7 +9,7 @@ authors = [ 'Giancarlo A. Chiappe' ]
 crate-type = ["cdylib"]
 
 [features]
-default = ["pg16"]
+default = ["pg15"]
 pg15 = ["pgrx/pg15", "pgrx-tests/pg15" ]
 pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
 pg_test = []

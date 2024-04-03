@@ -360,7 +360,7 @@ fn kq_fx_invalidate_cache() -> &'static str {
 #[pg_extern]
 fn kq_fx_get_rate(_currency_id: i64, _to_currency_id: i64, _date: pgrx::Date) -> Option<f64> {
     ensure_cache_populated();
-    // Mock result
+    // TODO: btree search
     Some(10.0f64)
 }
 
