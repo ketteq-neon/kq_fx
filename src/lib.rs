@@ -211,7 +211,21 @@ fn ensure_cache_populated() {
     let currency_min_max: SpiResult<(Option<i64>, Option<i64>)> =
         Spi::get_two(&get_guc_string(&Q2_GET_CURRENCIES_IDS));
     let (min_id, max_id): (i64, i64) = match currency_min_max {
-        Ok(values) => (values.0.unwrap(), values.1.unwrap()),
+        Ok(values) => {
+            let min_val = match values.0 {
+                None => {
+                    error!("Cannot get currency min value or currency table is empty")
+                }
+                Some(min_val) => min_val
+            };
+            let max_val = match values.1 {
+                None => {
+                    error!("Cannot get currency min value or currency table is empty")
+                }
+                Some(max_val) => max_val
+            };
+            (min_val, max_val)
+        },
         Err(spi_error) => {
             error!(
                 "Cannot execute min/max ID values query or there is no currencies in the table. {}",
