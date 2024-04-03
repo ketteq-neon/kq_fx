@@ -57,8 +57,8 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 // Control Struct
 #[derive(Copy, Clone)]
 pub struct CurrencyControl {
-    currency_count: i32,
-    entry_count: i32,
+    currency_count: i64,
+    entry_count: i64,
     min_currency_id: i8,
     cache_filled: bool,
 }
@@ -79,7 +79,7 @@ unsafe impl PGRXSharedMemory for CurrencyControl {}
 pub struct Currency {
     id: i64,
     xuid: &'static str,
-    rates_size: i32,
+    rates_size: i64,
     page_size: i32,
     first_page_offset: i32,
     page_map_size: i32,
@@ -109,7 +109,7 @@ static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i64, Currency, M
     PgLwLock::new();
 /// [CURRENCY_ID, PAGE_MAP[]]
 static CURRENCY_ID_PAGE_MAP: PgLwLock<
-    heapless::FnvIndexMap<i64, heapless::Vec<i32, MAX_ENTRIES>, MAX_CURRENCIES>,
+    heapless::FnvIndexMap<i64, heapless::Vec<i64, MAX_ENTRIES>, MAX_CURRENCIES>,
 > = PgLwLock::new();
 /// FROM_CURRENCY_ID => TO_CURRENCY_ID => DATE
 static CURRENCY_ID_DATE_MAP: PgLwLock<
@@ -208,9 +208,9 @@ fn ensure_cache_populated() {
         return;
     }
     // Currency Min and Max ID
-    let currency_min_max: SpiResult<(Option<i32>, Option<i32>)> =
+    let currency_min_max: SpiResult<(Option<i64>, Option<i64>)> =
         Spi::get_two(&get_guc_string(&Q2_GET_CURRENCIES_IDS));
-    let (min_id, max_id): (i32, i32) = match currency_min_max {
+    let (min_id, max_id): (i64, i64) = match currency_min_max {
         Ok(values) => (values.0.unwrap(), values.1.unwrap()),
         Err(spi_error) => {
             error!(
@@ -237,7 +237,7 @@ fn ensure_cache_populated() {
                 for row in tuple_table {
                     let id: i64 = row[1].value().unwrap().unwrap();
                     let xuid: &str = row[2].value().unwrap().unwrap();
-                    let entry_count: i32 = row[3].value().unwrap().unwrap();
+                    let entry_count: i64 = row[3].value().unwrap().unwrap();
 
                     let currency_metadata = Currency {
                         id,
