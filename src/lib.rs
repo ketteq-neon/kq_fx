@@ -283,7 +283,7 @@ fn ensure_cache_populated() {
         }
     });
     Spi::connect(|client| {
-        let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
+        let select = client.select(&crate::get_guc_string(&Q4_GET_CURRENCY_ENTRIES), None, None);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
