@@ -31,7 +31,7 @@ const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr =
 
 const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.id,
 LOWER(cu.xuid) xuid,
-(SELECT count(*) FROM plan.rates_fx rf WHERE fr.currency_id = cu.id) rates_count
+(SELECT count(*) FROM plan.fx_rate rf WHERE fr.currency_id = cu.id) rates_count
 FROM plan.currency cu
 GROUP by cu.id
 ORDER by cu.id asc;"#;
