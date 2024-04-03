@@ -26,7 +26,7 @@ const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr =
     cr#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
 
 const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.currency_id,
-(SELECT LOWER(cu.\"xuid\") FROM plan.currency cu WHERE cu.id = cr.currency_id) \"xuid\",
+(SELECT LOWER(cu.xuid) FROM plan.currency cu WHERE cu.id = cr.currency_id) xuid,
 count(*)
 FROM plan.fx_rate cr
 GROUP by cr.currency_id
