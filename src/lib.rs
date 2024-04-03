@@ -296,6 +296,7 @@ fn ensure_cache_populated() {
             }
         }
     });
+    let mut entry_count: i64 = 0;
     Spi::connect(|client| {
         let select = client.select(&crate::get_guc_string(&Q4_GET_CURRENCY_ENTRIES), None, None);
         match select {
@@ -305,25 +306,18 @@ fn ensure_cache_populated() {
                     let to_id: i64 = row[2].value().unwrap().unwrap();
                     let date: ::pgrx::Date = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
-
                     debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
-
                     let mut data_map = CURRENCY_DATA_MAP.exclusive();
-
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
                         let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> = heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
                         new_data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
-                        let vec_count = new_data_vec.len();
-                        debug1!("New Vec ({},{}) element count: {}", from_id, to_id, vec_count);
                         v.insert(new_data_vec).unwrap();
                     } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
                         let mut data_vec = o.get_mut();
                         data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
-                        let vec_count = data_vec.len();
-                        debug1!("Pushed to existing Vec ({},{}), element count: {}",from_id, to_id, vec_count);
                     }
-
-                    debug1!("Inserted into DATA_MAP: ({},{}) => ({}, {})", from_id, to_id, date, rate);
+                    entry_count += 1;
+                    debug1!("Inserted into shared cache: ({},{}) => ({}, {})", from_id, to_id, date, rate);
                 }
             }
             Err(spi_error) => {
@@ -332,9 +326,18 @@ fn ensure_cache_populated() {
         }
     });
 
-    let map_count = CURRENCY_DATA_MAP.share().len();
+    let currency_control = CURRENCY_CONTROL.share().clone();
 
-    debug1!("Map key count: {map_count}");
+    if currency_control.entry_count == entry_count {
+        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+            cache_filled: true,
+            ..currency_control
+        };
+
+        info!("Cache ready, entries: {entry_count}.");
+    } else {
+        error!("Loaded entries does not match entry count. Entry Count: {}, Entries Cached: {}", currency_control.entry_count, entry_count)
+    }
 }
 
 // fn cache_insert(id: i8, xuid: &'static str, value: f32) {
