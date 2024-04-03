@@ -420,8 +420,20 @@ fn kq_fx_get_rate_xuid(
     _to_currency_xuid: &'static str,
     _date: pgrx::Date,
 ) -> Option<f64> {
-    // Mock result
-    Some(11.0f64)
+    let xuid_map = CURRENCY_XUID_MAP.share();
+    let from_id = match xuid_map.get(_currency_xuid) {
+        None => {
+            error!("From currency xuid not found. {_currency_xuid}")
+        }
+        Some(currency_id) => currency_id
+    };
+    let to_id = match xuid_map.get(_to_currency_xuid) {
+        None => {
+            error!("Target currency xuid not found. {_currency_xuid}")
+        }
+        Some(currency_id) => currency_id
+    };
+    kq_fx_get_rate(*from_id, *to_id, _date)
 }
 
 // #[cfg(any(test, feature = "pg_test"))]
