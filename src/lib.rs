@@ -319,16 +319,16 @@ fn ensure_cache_populated() {
 // }
 
 fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
-    String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes())
+    let value = String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes())
         .to_string()
-        .replace('\n', " ")
+        .replace('\n', " ");
+    debug1!("Query: {value}");
+    value
 }
 
 /// This method prevents using the extension in incompatible databases.
 fn validate_compatible_db() -> &'static str {
-    let query = get_guc_string(&Q1_VALIDATION_QUERY);
-    debug1!("Validating database compatibility... Query: {query}");
-    let spi_result: SpiResult<Option<bool>> = Spi::get_one(&query);
+    let spi_result: SpiResult<Option<bool>> = Spi::get_one(&get_guc_string(&Q1_VALIDATION_QUERY));
     match spi_result {
         Ok(found_tables_opt) => match found_tables_opt {
             None => {
