@@ -1,12 +1,12 @@
 mod currency;
 
+use heapless::{Entry, FnvIndexMap};
 use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
 use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::{c_int, CStr};
-use heapless::{FnvIndexMap, Entry};
 
 // Max allocation params
 
@@ -21,13 +21,6 @@ WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rat
 
 const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr =
     cr#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
-
-// const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cr.currency_id,
-// (SELECT LOWER(cu.xuid) FROM plan.currency cu WHERE cu.id = cr.currency_id) currency_xuid,
-// count(*) rates_count
-// FROM plan.fx_rate cr
-// GROUP by cr.currency_id
-// ORDER by cr.currency_id asc;"#;
 
 const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.id,
 LOWER(cu.xuid),
@@ -61,18 +54,16 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 // Control Struct
 #[derive(Copy, Clone)]
 pub struct CurrencyControl {
+    cache_filled: bool,
     currency_count: i64,
     entry_count: i64,
-    min_currency_id: i8,
-    cache_filled: bool,
 }
 impl Default for CurrencyControl {
     fn default() -> Self {
         CurrencyControl {
+            cache_filled: false,
             currency_count: 0,
             entry_count: 0,
-            min_currency_id: 0,
-            cache_filled: false,
         }
     }
 }
@@ -81,22 +72,16 @@ unsafe impl PGRXSharedMemory for CurrencyControl {}
 // Currency Metadata Struct
 #[derive(Copy, Clone, Debug)]
 pub struct Currency {
+    entry_count: i64,
     id: i64,
     xuid: &'static str,
-    rates_size: i64,
-    page_size: i32,
-    first_page_offset: i32,
-    page_map_size: i32,
 }
 impl Default for Currency {
     fn default() -> Self {
         Currency {
+            entry_count: 0,
             id: 0,
             xuid: "",
-            rates_size: 0,
-            page_size: 0,
-            first_page_offset: 0,
-            page_map_size: 0,
         }
     }
 }
@@ -116,39 +101,6 @@ static CURRENCY_DATA_MAP: PgLwLock<
     heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
 > = PgLwLock::new();
 
-// /// [CURRENCY_ID, PAGE_MAP[]]
-// static CURRENCY_ID_PAGE_MAP: PgLwLock<
-//     heapless::FnvIndexMap<i64, heapless::Vec<i64, MAX_ENTRIES>, MAX_CURRENCIES>,
-// > = PgLwLock::new();
-
-
-// /// FROM_CURRENCY_ID => TO_CURRENCY_ID => DATE
-// static CURRENCY_ID_DATE_MAP: PgLwLock<
-//     heapless::FnvIndexMap<
-//         i64,
-//         heapless::FnvIndexMap<i64, pgrx::Date, MAX_CURRENCIES>,
-//         MAX_CURRENCIES,
-//     >,
-// > = PgLwLock::new();
-// /// FROM_CURRENCY_ID => TO_CURRENCY_ID => RATE
-// static CURRENCY_ID_RATES_MAP: PgLwLock<
-//     heapless::FnvIndexMap<i64, heapless::FnvIndexMap<i64, f64, MAX_CURRENCIES>, MAX_CURRENCIES>,
-// > = PgLwLock::new();
-
-// Get Var from FFI
-// extern "C" {
-//     static process_shared_preload_libraries_in_progress: *const c_int;
-// }
-// fn check_process_shared_preload_libraries_in_progress() -> bool {
-//     unsafe {
-//         if process_shared_preload_libraries_in_progress.is_null() {
-//             pgrx::warning!("process_shared_preload_libraries_in_progress is null");
-//             false
-//         } else {
-//             *process_shared_preload_libraries_in_progress != 0
-//         }
-//     }
-// }
 // Init Extension - Shared Memory
 #[pg_guard]
 pub extern "C" fn _PG_init() {
@@ -159,10 +111,6 @@ pub extern "C" fn _PG_init() {
     pg_shmem_init!(CURRENCY_XUID_MAP);
     pg_shmem_init!(CURRENCY_ID_METADATA_MAP);
     pg_shmem_init!(CURRENCY_DATA_MAP);
-    // pg_shmem_init!(CURRENCY_ID_DATE_MAP);
-    // pg_shmem_init!(CURRENCY_ID_RATES_MAP);
-    // pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
-
     unsafe {
         init_gucs();
     }
@@ -268,7 +216,7 @@ fn ensure_cache_populated() {
                     let currency_metadata = Currency {
                         id,
                         xuid,
-                        rates_size: entry_count,
+                        entry_count: entry_count,
                         ..Currency::default()
                     };
 
@@ -277,13 +225,14 @@ fn ensure_cache_populated() {
                         .insert(id, currency_metadata)
                         .unwrap();
 
+                    CURRENCY_XUID_MAP.exclusive().insert(xuid, id).unwrap();
+
                     let currency_control = CURRENCY_CONTROL.share().clone();
                     *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+                        currency_count: currency_control.currency_count + 1,
                         entry_count: currency_control.entry_count + entry_count,
                         ..currency_control
                     };
-
-                    CURRENCY_XUID_MAP.exclusive().insert(xuid, id).unwrap();
 
                     debug1!(
                         "Currency initialized. ID: {}, xuid: {}, entries: {}",
@@ -311,15 +260,26 @@ fn ensure_cache_populated() {
                     debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
                     let mut data_map = CURRENCY_DATA_MAP.exclusive();
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> = heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
-                        new_data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
+                        let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> =
+                            heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
+                        new_data_vec
+                            .push((date, rate))
+                            .expect("cannot insert more elements into date,rate vector");
                         v.insert(new_data_vec).unwrap();
                     } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
                         let mut data_vec = o.get_mut();
-                        data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
+                        data_vec
+                            .push((date, rate))
+                            .expect("cannot insert more elements into date,rate vector");
                     }
                     entry_count += 1;
-                    debug1!("Inserted into shared cache: ({},{}) => ({}, {})", from_id, to_id, date, rate);
+                    debug1!(
+                        "Inserted into shared cache: ({},{}) => ({}, {})",
+                        from_id,
+                        to_id,
+                        date,
+                        rate
+                    );
                 }
             }
             Err(spi_error) => {
@@ -338,25 +298,12 @@ fn ensure_cache_populated() {
 
         info!("Cache ready, entries: {entry_count}.");
     } else {
-        error!("Loaded entries does not match entry count. Entry Count: {}, Entries Cached: {}", currency_control.entry_count, entry_count)
+        error!(
+            "Loaded entries does not match entry count. Entry Count: {}, Entries Cached: {}",
+            currency_control.entry_count, entry_count
+        )
     }
 }
-
-// fn cache_insert(id: i8, xuid: &'static str, value: f32) {
-//     // CURRENCY_ID_RATE_MAP.exclusive().insert(id, value).unwrap();
-//     CURRENCY_XUID_MAP.exclusive().insert(xuid, id).unwrap();
-// }
-//
-// fn get_by_id(id: i32) -> Option<f32> {
-//     // CURRENCY_ID_RATE_MAP.share().get(&id).cloned()
-//     Some(10.1f32)
-// }
-//
-// fn get_by_xuid(xuid: &'static str) -> Option<f32> {
-//     let _id = CURRENCY_XUID_MAP.share().get(xuid).cloned().unwrap();
-//     // CURRENCY_ID_RATE_MAP.share().get(&id).cloned()
-//     Some(10.1f32)
-// }
 
 fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
     let value = String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes())
@@ -428,13 +375,13 @@ fn kq_fx_get_rate_xuid(
         None => {
             error!("From currency xuid not found. {_currency_xuid}")
         }
-        Some(currency_id) => currency_id
+        Some(currency_id) => currency_id,
     };
     let to_id = match xuid_map.get(_to_currency_xuid) {
         None => {
             error!("Target currency xuid not found. {_to_currency_xuid}")
         }
-        Some(currency_id) => currency_id
+        Some(currency_id) => currency_id,
     };
     kq_fx_get_rate(*from_id, *to_id, _date)
 }
