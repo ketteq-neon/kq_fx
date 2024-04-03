@@ -77,7 +77,7 @@ unsafe impl PGRXSharedMemory for CurrencyControl {}
 // Currency Metadata Struct
 #[derive(Copy, Clone, Debug)]
 pub struct Currency {
-    id: i8,
+    id: i64,
     xuid: &'static str,
     rates_size: i32,
     page_size: i32,
@@ -102,22 +102,22 @@ unsafe impl PGRXSharedMemory for Currency {}
 
 static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
 /// [CURRENCY_ID, CURRENCY_XUID]
-static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i8, MAX_CURRENCIES>> =
+static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i64, MAX_CURRENCIES>> =
     PgLwLock::new();
 /// [CURRENCY_ID, CURRENCY_METADATA]
-static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i8, Currency, MAX_CURRENCIES>> =
+static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i64, Currency, MAX_CURRENCIES>> =
     PgLwLock::new();
 /// [CURRENCY_ID, PAGE_MAP[]]
 static CURRENCY_ID_PAGE_MAP: PgLwLock<
-    heapless::FnvIndexMap<i8, heapless::Vec<i32, MAX_ENTRIES>, MAX_CURRENCIES>,
+    heapless::FnvIndexMap<i64, heapless::Vec<i32, MAX_ENTRIES>, MAX_CURRENCIES>,
 > = PgLwLock::new();
-/// [FROM_CURRENCY_ID, TO_CURRENCY_ID, DATE]
+/// FROM_CURRENCY_ID => TO_CURRENCY_ID => DATE
 static CURRENCY_ID_DATE_MAP: PgLwLock<
-    heapless::FnvIndexMap<i8, heapless::FnvIndexMap<i8, i32, MAX_CURRENCIES>, MAX_CURRENCIES>,
+    heapless::FnvIndexMap<i64, heapless::FnvIndexMap<i64, pgrx::Date, MAX_CURRENCIES>, MAX_CURRENCIES>,
 > = PgLwLock::new();
-/// [FROM_CURRENCY_ID, TO_CURRENCY_ID, RATE]
+/// FROM_CURRENCY_ID => TO_CURRENCY_ID => RATE
 static CURRENCY_ID_RATES_MAP: PgLwLock<
-    heapless::FnvIndexMap<i8, heapless::FnvIndexMap<i8, f32, MAX_CURRENCIES>, MAX_CURRENCIES>,
+    heapless::FnvIndexMap<i64, heapless::FnvIndexMap<i64, f64, MAX_CURRENCIES>, MAX_CURRENCIES>,
 > = PgLwLock::new();
 
 // Get Var from FFI
@@ -144,7 +144,7 @@ pub extern "C" fn _PG_init() {
     pg_shmem_init!(CURRENCY_XUID_MAP);
     pg_shmem_init!(CURRENCY_ID_METADATA_MAP);
     pg_shmem_init!(CURRENCY_ID_DATE_MAP);
-    pg_shmem_init!(CURRENCY_ID_RATES_MAP);
+    // pg_shmem_init!(CURRENCY_ID_RATES_MAP);
     pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
     unsafe {
         init_gucs();
@@ -235,7 +235,7 @@ fn ensure_cache_populated() {
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
-                    let id: i8 = row[1].value().unwrap().unwrap();
+                    let id: i64 = row[1].value().unwrap().unwrap();
                     let xuid: &str = row[2].value().unwrap().unwrap();
                     let entry_count: i32 = row[3].value().unwrap().unwrap();
 
@@ -342,9 +342,9 @@ fn kq_fx_invalidate_cache() -> &'static str {
 }
 
 #[pg_extern]
-fn kq_fx_get_rate(_currency_id: i32, _to_currency_id: i32, _date: pgrx::Date) -> Option<f32> {
+fn kq_fx_get_rate(_currency_id: i64, _to_currency_id: i64, _date: pgrx::Date) -> Option<f64> {
     // Mock result
-    Some(10.0f32)
+    Some(10.0f64)
 }
 
 #[pg_extern]
@@ -352,9 +352,9 @@ fn kq_fx_get_rate_xuid(
     _currency_xuid: &'static str,
     _to_currency_xuid: &'static str,
     _date: pgrx::Date,
-) -> Option<f32> {
+) -> Option<f64> {
     // Mock result
-    Some(11.0f32)
+    Some(11.0f64)
 }
 
 // #[cfg(any(test, feature = "pg_test"))]
