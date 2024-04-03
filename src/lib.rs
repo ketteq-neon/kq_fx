@@ -25,9 +25,9 @@ WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rat
 const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr =
     cr#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
 
-const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.currency_id,
-(SELECT LOWER(cu.xuid) FROM plan.currency cu WHERE cu.id = cr.currency_id) xuid,
-count(*)
+const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cr.currency_id,
+(SELECT LOWER(cu.xuid) FROM plan.currency cu WHERE cu.id = cr.currency_id) currency_xuid,
+count(*) rates_count
 FROM plan.fx_rate cr
 GROUP by cr.currency_id
 ORDER by cr.currency_id asc;"#;
