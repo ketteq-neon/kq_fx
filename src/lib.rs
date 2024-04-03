@@ -22,12 +22,19 @@ WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rat
 const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr =
     cr#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
 
-const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cr.currency_id,
-(SELECT LOWER(cu.xuid) FROM plan.currency cu WHERE cu.id = cr.currency_id) currency_xuid,
-count(*) rates_count
-FROM plan.fx_rate cr
-GROUP by cr.currency_id
-ORDER by cr.currency_id asc;"#;
+// const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cr.currency_id,
+// (SELECT LOWER(cu.xuid) FROM plan.currency cu WHERE cu.id = cr.currency_id) currency_xuid,
+// count(*) rates_count
+// FROM plan.fx_rate cr
+// GROUP by cr.currency_id
+// ORDER by cr.currency_id asc;"#;
+
+const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.id,
+LOWER(cu.xuid) xuid,
+(SELECT count(*) FROM plan.rates_fx rf WHERE fr.currency_id = cu.id) rates_count
+FROM plan.currency cu
+GROUP by cu.id
+ORDER by cu.id asc;"#;
 
 const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
     cr#"SELECT cr.currency_id, cr.to_currency_id, cr."date", cr.rate
@@ -425,7 +432,7 @@ fn kq_fx_get_rate_xuid(
     };
     let to_id = match xuid_map.get(_to_currency_xuid) {
         None => {
-            error!("Target currency xuid not found. {_currency_xuid}")
+            error!("Target currency xuid not found. {_to_currency_xuid}")
         }
         Some(currency_id) => currency_id
     };
