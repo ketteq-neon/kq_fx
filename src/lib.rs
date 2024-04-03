@@ -6,6 +6,7 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::{c_int, CStr};
+use heapless::{FnvIndexMap, Entry};
 
 // Max allocation params
 
@@ -31,7 +32,7 @@ ORDER by cr.currency_id asc;"#;
 const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
     cr#"SELECT cr.currency_id, cr.to_currency_id, cr."date", cr.rate
 from plan.fx_rate cr
-order by cr.currency_id asc, cr."date" asc;"#;
+order by cr.currency_id asc, cr.to_currency_id asc, cr."date" asc;"#;
 
 // Query GUCs
 
@@ -97,28 +98,35 @@ unsafe impl PGRXSharedMemory for Currency {}
 // Shared Memory Hashmaps
 
 static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
-/// [CURRENCY_ID, CURRENCY_XUID]
+/// CURRENCY_ID => CURRENCY_XUID
 static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i64, MAX_CURRENCIES>> =
     PgLwLock::new();
-/// [CURRENCY_ID, CURRENCY_METADATA]
+/// CURRENCY_ID => CURRENCY_METADATA
 static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i64, Currency, MAX_CURRENCIES>> =
     PgLwLock::new();
-/// [CURRENCY_ID, PAGE_MAP[]]
-static CURRENCY_ID_PAGE_MAP: PgLwLock<
-    heapless::FnvIndexMap<i64, heapless::Vec<i64, MAX_ENTRIES>, MAX_CURRENCIES>,
+/// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
+static CURRENCY_DATA_MAP: PgLwLock<
+    heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
 > = PgLwLock::new();
-/// FROM_CURRENCY_ID => TO_CURRENCY_ID => DATE
-static CURRENCY_ID_DATE_MAP: PgLwLock<
-    heapless::FnvIndexMap<
-        i64,
-        heapless::FnvIndexMap<i64, pgrx::Date, MAX_CURRENCIES>,
-        MAX_CURRENCIES,
-    >,
-> = PgLwLock::new();
-/// FROM_CURRENCY_ID => TO_CURRENCY_ID => RATE
-static CURRENCY_ID_RATES_MAP: PgLwLock<
-    heapless::FnvIndexMap<i64, heapless::FnvIndexMap<i64, f64, MAX_CURRENCIES>, MAX_CURRENCIES>,
-> = PgLwLock::new();
+
+// /// [CURRENCY_ID, PAGE_MAP[]]
+// static CURRENCY_ID_PAGE_MAP: PgLwLock<
+//     heapless::FnvIndexMap<i64, heapless::Vec<i64, MAX_ENTRIES>, MAX_CURRENCIES>,
+// > = PgLwLock::new();
+
+
+// /// FROM_CURRENCY_ID => TO_CURRENCY_ID => DATE
+// static CURRENCY_ID_DATE_MAP: PgLwLock<
+//     heapless::FnvIndexMap<
+//         i64,
+//         heapless::FnvIndexMap<i64, pgrx::Date, MAX_CURRENCIES>,
+//         MAX_CURRENCIES,
+//     >,
+// > = PgLwLock::new();
+// /// FROM_CURRENCY_ID => TO_CURRENCY_ID => RATE
+// static CURRENCY_ID_RATES_MAP: PgLwLock<
+//     heapless::FnvIndexMap<i64, heapless::FnvIndexMap<i64, f64, MAX_CURRENCIES>, MAX_CURRENCIES>,
+// > = PgLwLock::new();
 
 // Get Var from FFI
 // extern "C" {
@@ -143,9 +151,11 @@ pub extern "C" fn _PG_init() {
     pg_shmem_init!(CURRENCY_CONTROL);
     pg_shmem_init!(CURRENCY_XUID_MAP);
     pg_shmem_init!(CURRENCY_ID_METADATA_MAP);
-    pg_shmem_init!(CURRENCY_ID_DATE_MAP);
+    pg_shmem_init!(CURRENCY_DATA_MAP);
+    // pg_shmem_init!(CURRENCY_ID_DATE_MAP);
     // pg_shmem_init!(CURRENCY_ID_RATES_MAP);
-    pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
+    // pg_shmem_init!(CURRENCY_ID_PAGE_MAP);
+
     unsafe {
         init_gucs();
     }
@@ -296,7 +306,22 @@ fn ensure_cache_populated() {
                     let date: ::pgrx::Date = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
 
-                    debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}")
+                    debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
+
+                    let mut data_map = CURRENCY_DATA_MAP.exclusive();
+
+                    if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
+                        let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> = heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
+                        new_data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
+                        v.insert(new_data_vec).unwrap();
+                    };
+
+                    if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
+                        let mut data_vec = o.get_mut();
+                        data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
+                    }
+
+                    debug1!("Inserted into DATA_MAP: ({},{}) => ({}, {})", from_id, to_id, date, rate);
                 }
             }
             Err(spi_error) => {
@@ -364,6 +389,8 @@ fn kq_fx_invalidate_cache() -> &'static str {
     debug1!("Waiting for lock...");
     CURRENCY_XUID_MAP.exclusive().clear();
     debug1!("CURRENCY_XUID_MAP cleared");
+    CURRENCY_DATA_MAP.exclusive().clear();
+    debug1!("CURRENCY_DATA_MAP cleared");
     *CURRENCY_CONTROL.exclusive() = CurrencyControl::default();
     debug1!("CURRENCY_CONTROL reset");
     // Reload Cache
