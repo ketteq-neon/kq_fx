@@ -313,12 +313,14 @@ fn ensure_cache_populated() {
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
                         let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> = heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
                         new_data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
+                        let vec_count = new_data_vec.len();
+                        debug1!("New Vec ({},{}) element count: {}", from_id, to_id, vec_count);
                         v.insert(new_data_vec).unwrap();
-                    };
-
-                    if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
+                    } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
                         let mut data_vec = o.get_mut();
                         data_vec.push((date, rate)).expect("cannot insert more elements into date,rate vector");
+                        let vec_count = data_vec.len();
+                        debug1!("Pushed to existing Vec ({},{}), element count: {}",from_id, to_id, vec_count);
                     }
 
                     debug1!("Inserted into DATA_MAP: ({},{}) => ({}, {})", from_id, to_id, date, rate);
@@ -328,7 +330,11 @@ fn ensure_cache_populated() {
                 error!("Cannot load currency rates. {}", spi_error)
             }
         }
-    })
+    });
+
+    let map_count = CURRENCY_DATA_MAP.share().len();
+
+    debug1!("Map key count: {map_count}");
 }
 
 // fn cache_insert(id: i8, xuid: &'static str, value: f32) {
