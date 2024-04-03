@@ -121,25 +121,25 @@ static CURRENCY_ID_RATES_MAP: PgLwLock<
 > = PgLwLock::new();
 
 // Get Var from FFI
-extern "C" {
-    static process_shared_preload_libraries_in_progress: *const c_int;
-}
-fn check_process_shared_preload_libraries_in_progress() -> bool {
-    unsafe {
-        if process_shared_preload_libraries_in_progress.is_null() {
-            pgrx::warning!("process_shared_preload_libraries_in_progress is null");
-            false
-        } else {
-            *process_shared_preload_libraries_in_progress != 0
-        }
-    }
-}
+// extern "C" {
+//     static process_shared_preload_libraries_in_progress: *const c_int;
+// }
+// fn check_process_shared_preload_libraries_in_progress() -> bool {
+//     unsafe {
+//         if process_shared_preload_libraries_in_progress.is_null() {
+//             pgrx::warning!("process_shared_preload_libraries_in_progress is null");
+//             false
+//         } else {
+//             *process_shared_preload_libraries_in_progress != 0
+//         }
+//     }
+// }
 // Init Extension - Shared Memory
 #[pg_guard]
 pub extern "C" fn _PG_init() {
-    if !check_process_shared_preload_libraries_in_progress() {
-        panic!("ketteQ FX Currency Cache Extension needs to be loaded in the preload_shared_libraries section of postgres.conf")
-    }
+    // if !check_process_shared_preload_libraries_in_progress() {
+    //     error!("ketteQ FX Currency Cache Extension needs to be loaded in the preload_shared_libraries section of postgres.conf")
+    // }
     pg_shmem_init!(CURRENCY_CONTROL);
     pg_shmem_init!(CURRENCY_XUID_MAP);
     pg_shmem_init!(CURRENCY_ID_METADATA_MAP);
