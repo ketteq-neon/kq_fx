@@ -204,11 +204,6 @@ unsafe fn init_gucs() {
 
 // Cache management internals
 
-fn cache_init() {
-    debug1!("cache_init()");
-    ensure_cache_populated();
-}
-
 fn ensure_cache_populated() {
     debug1!("ensure_cache_populated()");
     validate_compatible_db();
@@ -403,13 +398,14 @@ fn kq_fx_invalidate_cache() -> &'static str {
     *CURRENCY_CONTROL.exclusive() = CurrencyControl::default();
     debug1!("CURRENCY_CONTROL reset");
     // Reload Cache
-    cache_init();
+    ensure_cache_populated();
     debug1!("Cache invalidated");
     "Cache invalidated."
 }
 
 #[pg_extern]
 fn kq_fx_get_rate(_currency_id: i64, _to_currency_id: i64, _date: pgrx::Date) -> Option<f64> {
+    ensure_cache_populated();
     // Mock result
     Some(10.0f64)
 }
