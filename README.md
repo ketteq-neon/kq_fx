@@ -20,7 +20,7 @@ executing the `CREATE EXTENSION` query.
 
 The PGRX build system allows to target different PostgreSQL version automatically adjusting the output for them.
 
-Supported by this extension: PostgreSQL 15 and 16 (default).
+Supported by this extension: PostgreSQL 15 (default) and 16.
 
 See the Build section to target a different PostgreSQL version, please note that if you use the automatic installer
 provided by the PGRX crate it will use the correct target PostgreSQL version.
@@ -35,11 +35,11 @@ The extension will load currency conversion data from specific tables stored in 
 
 # Usage
 
-| Function                                                                 | Description                                 |
-|--------------------------------------------------------------------------|---------------------------------------------|
-| kq_fx_invalidate_cache()                                                 | Invalidates the loaded cache.               |
-| kq_fx_get_rate(currency_id int8, to_currency_id int8, date)              | Gets the rate for the currency id.          |
-| kq_fx_get_rate_by_xuid(currency_xuid text, to_currency_xuid text, date)  | Gets the rate for the currency by its xuid. |
+| Function                                                                       | Description                                 |
+|--------------------------------------------------------------------------------|---------------------------------------------|
+| kq_fx_invalidate_cache()                                                       | Invalidates the loaded cache.               |
+| float8 kq_fx_get_rate(currency_id int8, to_currency_id int8, date)             | Gets the rate for the currency id.          |
+| float8 kq_fx_get_rate_by_xuid(currency_xuid text, to_currency_xuid text, date) | Gets the rate for the currency by its xuid. |
 
 # Build instructions
 
@@ -63,7 +63,7 @@ and the shared library `libkq_fx_currency.so`.
 
 ### Automatic install
 
-This will require an available `pg_config` available in the $PATH.
+This will require an available `pg_config` in the $PATH.
 
 - `cargo pgrx install --release`, add the `--sudo` flag to invoke sudo while installing.
 
