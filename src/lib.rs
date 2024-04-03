@@ -29,7 +29,7 @@ GROUP by cr.currency_id
 ORDER by cr.currency_id asc;"#;
 
 const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
-    cr#"SELECT cr.currency_id, cr.to_currency_id, cr.\"date\", cr.rate"
+    cr#"SELECT cr.currency_id, cr.to_currency_id, cr.\"date\", cr.rate
 from plan.fx_rate cr
 order by cr.currency_id asc, cr.\"date\" asc;"#;
 
@@ -109,7 +109,11 @@ static CURRENCY_ID_PAGE_MAP: PgLwLock<
 > = PgLwLock::new();
 /// FROM_CURRENCY_ID => TO_CURRENCY_ID => DATE
 static CURRENCY_ID_DATE_MAP: PgLwLock<
-    heapless::FnvIndexMap<i64, heapless::FnvIndexMap<i64, pgrx::Date, MAX_CURRENCIES>, MAX_CURRENCIES>,
+    heapless::FnvIndexMap<
+        i64,
+        heapless::FnvIndexMap<i64, pgrx::Date, MAX_CURRENCIES>,
+        MAX_CURRENCIES,
+    >,
 > = PgLwLock::new();
 /// FROM_CURRENCY_ID => TO_CURRENCY_ID => RATE
 static CURRENCY_ID_RATES_MAP: PgLwLock<
@@ -212,16 +216,16 @@ fn ensure_cache_populated() {
                 None => {
                     error!("Cannot get currency min value or currency table is empty")
                 }
-                Some(min_val) => min_val
+                Some(min_val) => min_val,
             };
             let max_val = match values.1 {
                 None => {
                     error!("Cannot get currency min value or currency table is empty")
                 }
-                Some(max_val) => max_val
+                Some(max_val) => max_val,
             };
             (min_val, max_val)
-        },
+        }
         Err(spi_error) => {
             error!(
                 "Cannot execute min/max ID values query or there is no currencies in the table. {}",
