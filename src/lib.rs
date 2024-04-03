@@ -14,10 +14,6 @@ const MAX_CURRENCIES: usize = 1 * 1024;
 
 // Default Queries
 
-// const DEFAULT_VALIDATION_QUERY: &str = r#"SELECT count(table_name) = 2
-// FROM information_schema.tables
-// WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
-
 const DEFAULT_Q1_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
 FROM information_schema.tables
 WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
@@ -33,7 +29,7 @@ GROUP by cr.currency_id
 ORDER by cr.currency_id asc;"#;
 
 const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
-    cr#"SELECT cr.currency_id, cr.to_currency_id, cr.rate cr.\"date\"
+    cr#"SELECT cr.currency_id, cr.to_currency_id, cr.\"date\, cr.rate"
 from plan.fx_rate cr
 order by cr.currency_id asc, cr.\"date\" asc;"#;
 
@@ -285,8 +281,25 @@ fn ensure_cache_populated() {
                 error!("Cannot load currencies. {}", spi_error)
             }
         }
+    });
+    Spi::connect(|client| {
+        let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
+        match select {
+            Ok(tuple_table) => {
+                for row in tuple_table {
+                    let from_id: i64 = row[1].value().unwrap().unwrap();
+                    let to_id: i64 = row[2].value().unwrap().unwrap();
+                    let date: ::pgrx::Date = row[3].value().unwrap().unwrap();
+                    let rate: f64 = row[4].value().unwrap().unwrap();
+
+                    debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}")
+                }
+            }
+            Err(spi_error) => {
+                error!("Cannot load currency rates. {}", spi_error)
+            }
+        }
     })
-    // TODO: Get Currency Entries
 }
 
 // fn cache_insert(id: i8, xuid: &'static str, value: f32) {
