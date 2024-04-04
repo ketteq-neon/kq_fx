@@ -1,10 +1,11 @@
-use heapless::{Entry, FnvIndexMap};
+use heapless::Entry;
 use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
 use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::CStr;
 
 // Max allocation params
@@ -266,7 +267,7 @@ fn ensure_cache_populated() {
                             .expect("cannot insert more elements into date,rate vector");
                         v.insert(new_data_vec).unwrap();
                     } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
-                        let mut data_vec = o.get_mut();
+                        let data_vec = o.get_mut();
                         data_vec
                             .push((date, rate))
                             .expect("cannot insert more elements into date,rate vector");
@@ -334,12 +335,42 @@ fn validate_compatible_db() -> &'static str {
     }
 }
 
+// Utility
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum DependencyValue {
+    String(String),
+    Object {
+        version: String,
+        features: Vec<String>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CargoToml {
+    dependencies: HashMap<String, DependencyValue>,
+}
+
 // Exported Functions
 
 #[pg_extern]
 fn kq_fx_check_db() -> &'static str {
     validate_compatible_db()
 }
+
+// #[pg_extern]
+// fn kq_fx_cache_status(
+// ) -> TableIterator<'static, (name!(property, &'static str), name!(value, &'static str))> {
+//     let cargo_toml_raw = include_str!("../Cargo.toml");
+//     let cargo_toml: CargoToml = ::toml::from_str(cargo_toml_raw).unwrap();
+//     let pgrx_version_dep = cargo_toml.dependencies.get("pgrx").unwrap();
+//     // let control = CURRENCY_CONTROL.share().clone();
+//     TableIterator::new(vec![
+//         ("PostgreSQL SDK Version", pg_sys::get_pg_version_string()),
+//         ("PGRX Version", format!("{pgrx_version_dep:#?}"))
+//     ])
+// }
 
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
@@ -359,18 +390,26 @@ fn kq_fx_invalidate_cache() -> &'static str {
 #[pg_extern(parallel_safe)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Option<f64> {
     ensure_cache_populated();
-    let data_map = CURRENCY_DATA_MAP.share();
-    if let Some(dates_rates) = data_map.get(&(currency_id, to_currency_id)) {
+    if let Some(dates_rates) = CURRENCY_DATA_MAP
+        .share()
+        .get(&(currency_id, to_currency_id))
+    {
         let btree: BTreeMap<_, _> = dates_rates.iter().cloned().collect();
-        btree.range(..=date).next_back().map(|(_, rate)| *rate)
+        let date_rate = btree.range(date..=date).next_back();
+        if date_rate.is_some() {
+            date_rate.map(|(date, rate)| {
+                debug1!("Found rate with date: {}", date);
+                *rate
+            })
+        } else {
+            error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date)
+        }
     } else {
-        debug1!(
-            "Cannot find a rate with this combination: from_id: {}, to_id: {}, date: {}",
+        error!(
+            "There are no rates with this combination: from_id: {}, to_id: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.",
             currency_id,
-            to_currency_id,
-            date
+            to_currency_id
         );
-        None
     }
 }
 
