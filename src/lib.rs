@@ -409,9 +409,9 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
             if cfg!(feature = "get-next-rate") {
                 let next_date_rate = btree.range(date..).next();
                 if next_date_rate.is_some() {
-                    next_date_rate.map(|(date, rate)| {
+                    return next_date_rate.map(|(date, rate)| {
                         debug1!("Found future rate with date: {}", date);
-                        return *rate;
+                        *rate
                     });
                 }
             }
