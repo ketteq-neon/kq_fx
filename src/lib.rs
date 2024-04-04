@@ -406,7 +406,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
             // Enable the "get-next-rate" feature if we want to get the next future rate if
             // no dates before the requested date exists. This can be converted to a
             // GUC or removed if is not necessary.
-            #[cfg(feature="get-next-rate")]
+            #[cfg(feature = "get-next-rate")]
             {
                 let next_date_rate = btree.range(date..).next();
                 if next_date_rate.is_some() {
