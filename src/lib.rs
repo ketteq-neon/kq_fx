@@ -399,19 +399,18 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
         let date_rate = btree.range(..=date).next_back();
         if date_rate.is_some() {
             date_rate.map(|(date, rate)| {
-                debug1!("Found rate with date: {}", date);
+                debug1!("Found rate exact/previous with date: {}", date);
                 *rate
             })
         } else {
             // Enable the "get-next-rate" feature if we want to get the next future rate if
             // no dates before the requested date exists. This can be converted to a
             // GUC or removed if is not necessary.
-            #[cfg(feature = "get-next-rate")]
-            {
+            if cfg!(feature = "get-next-rate") {
                 let next_date_rate = btree.range(date..).next();
                 if next_date_rate.is_some() {
                     next_date_rate.map(|(date, rate)| {
-                        debug1!("Found rate with date: {}", date);
+                        debug1!("Found future rate with date: {}", date);
                         return *rate;
                     });
                 }
