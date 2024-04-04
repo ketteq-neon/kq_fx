@@ -395,14 +395,28 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
         .get(&(currency_id, to_currency_id))
     {
         let btree: BTreeMap<_, _> = dates_rates.iter().cloned().collect();
-        let date_rate = btree.range(date..=date).next_back();
+        // This will match the exact date and also the last date that has a rate before the requested one.
+        let date_rate = btree.range(..=date).next_back();
         if date_rate.is_some() {
             date_rate.map(|(date, rate)| {
                 debug1!("Found rate with date: {}", date);
                 *rate
             })
         } else {
-            error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date)
+            // Enable the "get-next-rate" feature if we want to get the next future rate if
+            // no dates before the requested date exists. This can be converted to a
+            // GUC or removed if is not necessary.
+            #[cfg(feature="get-next-rate")]
+            {
+                let next_date_rate = btree.range(date..).next();
+                if next_date_rate.is_some() {
+                    next_date_rate.map(|(date, rate)| {
+                        debug1!("Found rate with date: {}", date);
+                        return *rate;
+                    });
+                }
+            }
+            error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
         }
     } else {
         error!(
