@@ -432,6 +432,7 @@ fn kq_fx_get_rate_xuid(
     to_currency_xuid: &'static str,
     date: pgrx::Date,
 ) -> Option<f64> {
+    ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
     let from_id = match xuid_map.get(currency_xuid) {
         None => {
