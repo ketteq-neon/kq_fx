@@ -1,12 +1,11 @@
-mod currency;
-
 use heapless::{Entry, FnvIndexMap};
 use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
 use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
-use std::ffi::{c_int, CStr};
+use std::collections::BTreeMap;
+use std::ffi::CStr;
 
 // Max allocation params
 
@@ -216,7 +215,7 @@ fn ensure_cache_populated() {
                     let currency_metadata = Currency {
                         id,
                         xuid,
-                        entry_count: entry_count,
+                        entry_count,
                         ..Currency::default()
                     };
 
@@ -357,33 +356,44 @@ fn kq_fx_invalidate_cache() -> &'static str {
     "Cache invalidated."
 }
 
-#[pg_extern]
-fn kq_fx_get_rate(_currency_id: i64, _to_currency_id: i64, _date: pgrx::Date) -> Option<f64> {
+#[pg_extern(parallel_safe)]
+fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Option<f64> {
     ensure_cache_populated();
-    // TODO: btree search
-    Some(10.0f64)
+    let data_map = CURRENCY_DATA_MAP.share();
+    if let Some(dates_rates) = data_map.get(&(currency_id, to_currency_id)) {
+        let btree: BTreeMap<_, _> = dates_rates.iter().cloned().collect();
+        btree.range(..=date).next_back().map(|(_, rate)| *rate)
+    } else {
+        debug1!(
+            "Cannot find a rate with this combination: from_id: {}, to_id: {}, date: {}",
+            currency_id,
+            to_currency_id,
+            date
+        );
+        None
+    }
 }
 
-#[pg_extern]
+#[pg_extern(parallel_safe)]
 fn kq_fx_get_rate_xuid(
-    _currency_xuid: &'static str,
-    _to_currency_xuid: &'static str,
-    _date: pgrx::Date,
+    currency_xuid: &'static str,
+    to_currency_xuid: &'static str,
+    date: pgrx::Date,
 ) -> Option<f64> {
     let xuid_map = CURRENCY_XUID_MAP.share();
-    let from_id = match xuid_map.get(_currency_xuid) {
+    let from_id = match xuid_map.get(currency_xuid) {
         None => {
-            error!("From currency xuid not found. {_currency_xuid}")
+            error!("From currency xuid not found. {currency_xuid}")
         }
         Some(currency_id) => currency_id,
     };
-    let to_id = match xuid_map.get(_to_currency_xuid) {
+    let to_id = match xuid_map.get(to_currency_xuid) {
         None => {
-            error!("Target currency xuid not found. {_to_currency_xuid}")
+            error!("Target currency xuid not found. {to_currency_xuid}")
         }
         Some(currency_id) => currency_id,
     };
-    kq_fx_get_rate(*from_id, *to_id, _date)
+    kq_fx_get_rate(*from_id, *to_id, date)
 }
 
 // #[cfg(any(test, feature = "pg_test"))]
