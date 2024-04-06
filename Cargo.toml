@@ -7,6 +7,7 @@ authors = [ 'Giancarlo A. Chiappe' ]
 
 [lib]
 crate-type = ["cdylib"]
+name = "kq_fx"
 
 [features]
 default = ["pg15"]
