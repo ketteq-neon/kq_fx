@@ -381,8 +381,6 @@ fn kq_fx_invalidate_cache() -> &'static str {
     debug1!("CURRENCY_DATA_MAP cleared");
     *CURRENCY_CONTROL.exclusive() = CurrencyControl::default();
     debug1!("CURRENCY_CONTROL reset");
-    // Reload Cache
-    ensure_cache_populated();
     debug1!("Cache invalidated");
     "Cache invalidated."
 }
