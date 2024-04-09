@@ -393,7 +393,6 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        // let btree: BTreeMap<_, _> = dates_rates.iter().cloned().collect();
         // Create a referenced binary tree map from the shared rates vector
         let btree: BTreeMap<_, _> = dates_rates
             .iter()
