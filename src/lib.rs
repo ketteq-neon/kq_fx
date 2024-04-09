@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use heapless::Entry;
 use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
@@ -392,11 +393,16 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        let btree: BTreeMap<_, _> = dates_rates.iter().cloned().collect();
+        // let btree: BTreeMap<_, _> = dates_rates.iter().cloned().collect();
+        // Create a referenced binary tree map from the shared rates vector
+        let btree: BTreeMap<_, _> = dates_rates
+            .iter()
+            .map(|(k, v)| (*k, v))
+            .collect();
         // This will match the exact date and also the last date that has a rate before the requested one.
         let date_rate = btree.range(..=date).next_back();
         if date_rate.is_some() {
-            date_rate.map(|(date, rate)| {
+            date_rate.map(|(date, &rate)| {
                 debug1!("Found rate exact/previous with date: {}", date);
                 *rate
             })
@@ -407,7 +413,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
             if cfg!(feature = "get-next-rate") {
                 let next_date_rate = btree.range(date..).next();
                 if next_date_rate.is_some() {
-                    return next_date_rate.map(|(date, rate)| {
+                    return next_date_rate.map(|(date, &rate)| {
                         debug1!("Found future rate with date: {}", date);
                         *rate
                     });
