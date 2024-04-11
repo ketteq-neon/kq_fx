@@ -67,15 +67,6 @@ pub struct Currency {
     id: i64,
     xuid: &'static str,
 }
-// impl Default for Currency {
-//     fn default() -> Self {
-//         Currency {
-//             entry_count: 0,
-//             id: 0,
-//             xuid: "",
-//         }
-//     }
-// }
 
 type CurrencyDataMap = PgLwLock<
     heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
