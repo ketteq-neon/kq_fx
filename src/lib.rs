@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use heapless::Entry;
 use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
@@ -6,13 +5,13 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::CStr;
 
 // Max allocation params
 
 const MAX_ENTRIES: usize = 8 * 1024;
-const MAX_CURRENCIES: usize = 1 * 1024;
+const MAX_CURRENCIES: usize = 1024;
 
 // Default Queries
 
@@ -53,39 +52,35 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 ::pgrx::pg_module_magic!();
 
 // Control Struct
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
     currency_count: i64,
     entry_count: i64,
 }
-impl Default for CurrencyControl {
-    fn default() -> Self {
-        CurrencyControl {
-            cache_filled: false,
-            currency_count: 0,
-            entry_count: 0,
-        }
-    }
-}
 unsafe impl PGRXSharedMemory for CurrencyControl {}
 
 // Currency Metadata Struct
-#[derive(Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone, Debug)]
 pub struct Currency {
     entry_count: i64,
     id: i64,
     xuid: &'static str,
 }
-impl Default for Currency {
-    fn default() -> Self {
-        Currency {
-            entry_count: 0,
-            id: 0,
-            xuid: "",
-        }
-    }
-}
+// impl Default for Currency {
+//     fn default() -> Self {
+//         Currency {
+//             entry_count: 0,
+//             id: 0,
+//             xuid: "",
+//         }
+//     }
+// }
+
+type CurrencyDataMap = PgLwLock<
+    heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
+>;
+
 unsafe impl PGRXSharedMemory for Currency {}
 
 // Shared Memory Hashmaps
@@ -98,9 +93,7 @@ static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i64, MAX_
 static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i64, Currency, MAX_CURRENCIES>> =
     PgLwLock::new();
 /// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
-static CURRENCY_DATA_MAP: PgLwLock<
-    heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
-> = PgLwLock::new();
+static CURRENCY_DATA_MAP: CurrencyDataMap = PgLwLock::new();
 
 // Init Extension - Shared Memory
 #[pg_guard]
@@ -218,7 +211,6 @@ fn ensure_cache_populated() {
                         id,
                         xuid,
                         entry_count,
-                        ..Currency::default()
                     };
 
                     CURRENCY_ID_METADATA_MAP
@@ -393,33 +385,32 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        // Create a referenced binary tree map from the shared rates vector
-        let btree: BTreeMap<_, _> = dates_rates
-            .iter()
-            .map(|(k, v)| (*k, v))
-            .collect();
-        // This will match the exact date and also the last date that has a rate before the requested one.
-        let date_rate = btree.range(..=date).next_back();
-        if date_rate.is_some() {
-            date_rate.map(|(date, &rate)| {
+        let mut date_rate: Option<f64> = None;
+
+        for &entry in dates_rates.iter().rev() {
+            if entry.0 <= date {
                 debug1!("Found rate exact/previous with date: {}", date);
-                *rate
-            })
-        } else {
+                date_rate = Some(entry.1);
+                break;
+            }
+        }
+
+        if date_rate.is_none() {
             // Enable the "get-next-rate" feature if we want to get the next future rate if
             // no dates before the requested date exists. This can be converted to a
             // GUC or removed if is not necessary.
-            if cfg!(feature = "get-next-rate") {
-                let next_date_rate = btree.range(date..).next();
-                if next_date_rate.is_some() {
-                    return next_date_rate.map(|(date, &rate)| {
+            if cfg!(feature = "next-rate") {
+                for &entry in dates_rates.iter() {
+                    if entry.0 > date {
                         debug1!("Found future rate with date: {}", date);
-                        *rate
-                    });
+                        return Some(entry.1);
+                    }
                 }
             }
             error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
         }
+
+        date_rate
     } else {
         error!(
             "There are no rates with this combination: from_id: {}, to_id: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.",
