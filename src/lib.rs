@@ -380,17 +380,6 @@ fn kq_fx_display_cache() -> TableIterator<'static,
     )
 > {
     ensure_cache_populated();
-    // let mut result_vec = vec![];
-    // CURRENCY_DATA_MAP.share().iter().for_each(|k_v| {
-    //     let from_id = k_v.0.0;
-    //     let to_id = k_v.0.1;
-    //     let data_vec = k_v.1;
-    //     for date_rate in data_vec {
-    //         result_vec.push(
-    //             (from_id, to_id, date_rate.0, date_rate.1)
-    //         )
-    //     }
-    // });
     let result_vec: Vec<(_, _, _, _)> = CURRENCY_DATA_MAP.share().iter()
         .flat_map(|((from_id, to_id), data_vec)| {
             data_vec.iter().map(move |date_rate| {
