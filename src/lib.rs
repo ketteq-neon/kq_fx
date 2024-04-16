@@ -7,6 +7,7 @@ use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucS
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::CStr;
+use toml::from_str;
 
 // Max allocation params
 
@@ -378,9 +379,21 @@ fn kq_fx_display_cache() -> TableIterator<'static,
         name!(rate, f64)
     )
 > {
-    TableIterator::new(vec![
-        ( 1, 2, pgrx::Date::new(2024, 01, 01).unwrap(), 0.1234 )
-    ])
+    ensure_cache_populated();
+    let mut result_vec = vec![];
+    CURRENCY_DATA_MAP.share().iter().for_each(|k_v| {
+        let from_id = k_v.0.0;
+        let to_id = k_v.0.1;
+        let data_vec = k_v.1;
+        for date_rate in data_vec {
+            result_vec.push(
+                (from_id, to_id, date_rate.0, date_rate.1)
+            )
+        }
+    });
+    TableIterator::new(
+        result_vec
+    )
 }
 
 #[pg_extern(parallel_safe)]
