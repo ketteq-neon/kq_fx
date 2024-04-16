@@ -369,6 +369,20 @@ fn kq_fx_invalidate_cache() -> &'static str {
     "Cache invalidated."
 }
 
+#[pg_extern]
+fn kq_fx_display_cache() -> TableIterator<'static,
+    (
+        name!(currency_id, i64),
+        name!(to_currency_id, i64),
+        name!(date, pgrx::Date),
+        name!(rate, f64)
+    )
+> {
+    TableIterator::new(vec![
+        ( 1, 2, pgrx::Date::new(2024, 01, 01).unwrap(), 0.1234 )
+    ])
+}
+
 #[pg_extern(parallel_safe)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Option<f64> {
     ensure_cache_populated();
