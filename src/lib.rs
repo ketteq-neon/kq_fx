@@ -403,7 +403,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        let mut date_rate: Option<f64> = match dates_rates.binary_search_by(|&(date, _)| date.cmp(&date)) {
+        let mut date_rate: Option<f64> = match dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date)) {
             Ok(index) => {
                 debug1!("Found rate exactly with date: {}", date);
                 Some(dates_rates[index].1)
