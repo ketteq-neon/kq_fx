@@ -395,48 +395,29 @@ fn kq_fx_display_cache() -> TableIterator<'static,
 #[pg_extern(parallel_safe)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Option<f64> {
     ensure_cache_populated();
-    if let Some(dates_rates) = CURRENCY_DATA_MAP
-        .share()
-        .get(&(currency_id, to_currency_id))
-    {
-        let mut date_rate: Option<f64> = match dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date)) {
+    if let Some(dates_rates) = CURRENCY_DATA_MAP.share().get(&(currency_id, to_currency_id)) {
+        let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
+        match result {
             Ok(index) => {
-                debug1!("Found rate exactly with date: {}", date);
+                // debug1!("Found rate exactly with date: {}", date);
                 Some(dates_rates[index].1)
             },
             Err(index) => {
                 if index > 0 {
-                    debug1!("Found previous rate with date: {}", date);
+                    // debug1!("Found previous rate with date: {}", date);
                     Some(dates_rates[index - 1].1)
                 } else {
-                    None
+                    if cfg!(feature = "next-rate") && index < dates_rates.len() {
+                        // debug1!("Found future rate with date: {}", date);
+                        Some(dates_rates[index].1)
+                    } else {
+                        error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
+                    }
                 }
             }
-        };
-
-        if date_rate.is_none() {
-            // Enable the "get-next-rate" feature if we want to get the next future rate if
-            // no dates before the requested date exists. This can be converted to a
-            // GUC or removed if is not necessary.
-            if cfg!(feature = "next-rate") {
-                error!("next-rate feature not implemented.")
-                // for &entry in dates_rates.iter() {
-                //     if entry.0 > date {
-                //         debug1!("Found future rate with date: {}", date);
-                //         return Some(entry.1);
-                //     }
-                // }
-            }
-            error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
         }
-
-        date_rate
     } else {
-        error!(
-            "There are no rates with this combination: from_id: {}, to_id: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.",
-            currency_id,
-            to_currency_id
-        );
+        error!("There are no rates for this currency pair: from_id: {}, to_id: {}. If the rates table was recently updated, a cache reload is necessary. Run `SELECT kq_fx_invalidate_cache()`.", currency_id, to_currency_id);
     }
 }
 
