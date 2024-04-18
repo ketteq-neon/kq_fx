@@ -71,10 +71,7 @@ pub struct Currency {
 
 type ExtDate = pgrx::Date;
 type StoreDate = i32;
-
 type FromToIdPair = (i64, i64);
-type DateRatePair = (ExtDate, f64);
-
 type StoreDateRatePair = (StoreDate, f64);
 
 type CurrencyDataMap = PgLwLock<
@@ -402,7 +399,7 @@ fn kq_fx_display_cache() -> TableIterator<'static,
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Option<f64> {
+fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> f64 {
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP.share().get(&(currency_id, to_currency_id)) {
@@ -410,16 +407,16 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Optio
         match result {
             Ok(index) => {
                 // debug1!("Found rate exactly with date: {}", date);
-                Some(dates_rates[index].1)
+                dates_rates[index].1
             },
             Err(index) => {
                 if index > 0 {
                     // debug1!("Found previous rate with date: {}", date);
-                    Some(dates_rates[index - 1].1)
+                    dates_rates[index - 1].1
                 } else {
                     if cfg!(feature = "next-rate") && index < dates_rates.len() {
                         // debug1!("Found future rate with date: {}", date);
-                        Some(dates_rates[index].1)
+                        dates_rates[index].1
                     } else {
                         error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
                     }
@@ -436,7 +433,7 @@ fn kq_fx_get_rate_xuid(
     currency_xuid: &'static str,
     to_currency_xuid: &'static str,
     date: ExtDate,
-) -> Option<f64> {
+) -> f64 {
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
     let from_id = match xuid_map.get(currency_xuid) {
