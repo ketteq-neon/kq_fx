@@ -69,12 +69,16 @@ pub struct Currency {
     xuid: &'static str,
 }
 
-type ExtDate = i32;
+type ExtDate = pgrx::Date;
+type StoreDate = i32;
 
+type FromToIdPair = (i64, i64);
 type DateRatePair = (ExtDate, f64);
 
+type StoreDateRatePair = (StoreDate, f64);
+
 type CurrencyDataMap = PgLwLock<
-    heapless::FnvIndexMap<(i64, i64), heapless::Vec<DateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
+    heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
 >;
 
 unsafe impl PGRXSharedMemory for Currency {}
@@ -244,21 +248,21 @@ fn ensure_cache_populated() {
                 for row in tuple_table {
                     let from_id: i64 = row[1].value().unwrap().unwrap();
                     let to_id: i64 = row[2].value().unwrap().unwrap();
-                    let date: ExtDate = row[3].value().unwrap().unwrap();
+                    let date: pgrx::Date = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
                     debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
                     let mut data_map = CURRENCY_DATA_MAP.exclusive();
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let mut new_data_vec: heapless::Vec<DateRatePair, MAX_ENTRIES> =
-                            heapless::Vec::<DateRatePair, MAX_ENTRIES>::new();
+                        let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                            heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
                         new_data_vec
-                            .push((date, rate))
+                            .push((date.to_pg_epoch_days(), rate))
                             .expect("cannot insert more elements into date,rate vector");
                         v.insert(new_data_vec).unwrap();
                     } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
                         let data_vec = o.get_mut();
                         data_vec
-                            .push((date, rate))
+                            .push((date.to_pg_epoch_days(), rate))
                             .expect("cannot insert more elements into date,rate vector");
                     }
                     entry_count += 1;
@@ -386,8 +390,9 @@ fn kq_fx_display_cache() -> TableIterator<'static,
     ensure_cache_populated();
     let result_vec: Vec<(_, _, _, _)> = CURRENCY_DATA_MAP.share().iter()
         .flat_map(|((from_id, to_id), data_vec)| {
-            data_vec.iter().map(move |date_rate| {
-                (*from_id, *to_id, date_rate.0, date_rate.1)
+            data_vec.iter().map(move |date_rate| unsafe {
+                let date = pgrx::Date::from_pg_epoch_days(date_rate.0);
+                (*from_id, *to_id, date, date_rate.1)
             })
         })
         .collect();
@@ -399,6 +404,7 @@ fn kq_fx_display_cache() -> TableIterator<'static,
 #[pg_extern(parallel_safe)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Option<f64> {
     ensure_cache_populated();
+    let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP.share().get(&(currency_id, to_currency_id)) {
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
