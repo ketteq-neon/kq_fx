@@ -69,8 +69,12 @@ pub struct Currency {
     xuid: &'static str,
 }
 
+type ExtDate = i32;
+
+type DateRatePair = (ExtDate, f64);
+
 type CurrencyDataMap = PgLwLock<
-    heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
+    heapless::FnvIndexMap<(i64, i64), heapless::Vec<DateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
 >;
 
 unsafe impl PGRXSharedMemory for Currency {}
@@ -240,13 +244,13 @@ fn ensure_cache_populated() {
                 for row in tuple_table {
                     let from_id: i64 = row[1].value().unwrap().unwrap();
                     let to_id: i64 = row[2].value().unwrap().unwrap();
-                    let date: ::pgrx::Date = row[3].value().unwrap().unwrap();
+                    let date: ExtDate = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
                     debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
                     let mut data_map = CURRENCY_DATA_MAP.exclusive();
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> =
-                            heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
+                        let mut new_data_vec: heapless::Vec<DateRatePair, MAX_ENTRIES> =
+                            heapless::Vec::<DateRatePair, MAX_ENTRIES>::new();
                         new_data_vec
                             .push((date, rate))
                             .expect("cannot insert more elements into date,rate vector");
@@ -375,7 +379,7 @@ fn kq_fx_display_cache() -> TableIterator<'static,
     (
         name!(currency_id, i64),
         name!(to_currency_id, i64),
-        name!(date, pgrx::Date),
+        name!(date, ExtDate),
         name!(rate, f64)
     )
 > {
@@ -393,7 +397,7 @@ fn kq_fx_display_cache() -> TableIterator<'static,
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Option<f64> {
+fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Option<f64> {
     ensure_cache_populated();
     if let Some(dates_rates) = CURRENCY_DATA_MAP.share().get(&(currency_id, to_currency_id)) {
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
@@ -425,7 +429,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
 fn kq_fx_get_rate_xuid(
     currency_xuid: &'static str,
     to_currency_xuid: &'static str,
-    date: pgrx::Date,
+    date: ExtDate,
 ) -> Option<f64> {
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
