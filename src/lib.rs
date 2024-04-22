@@ -213,13 +213,9 @@ fn ensure_cache_populated() {
                         entry_count,
                     };
 
-                    id_data_map
-                        .insert(id, currency_metadata)
-                        .unwrap();
+                    id_data_map.insert(id, currency_metadata).unwrap();
 
-                    xuid_map
-                        .insert(xuid, id)
-                        .unwrap();
+                    xuid_map.insert(xuid, id).unwrap();
 
                     total_entry_count += entry_count;
                     currencies_count += 1;
@@ -389,16 +385,19 @@ fn kq_fx_invalidate_cache() -> &'static str {
 }
 
 #[pg_extern]
-fn kq_fx_display_cache() -> TableIterator<'static,
+fn kq_fx_display_cache() -> TableIterator<
+    'static,
     (
         name!(currency_id, i64),
         name!(to_currency_id, i64),
         name!(date, ExtDate),
-        name!(rate, f64)
-    )
+        name!(rate, f64),
+    ),
 > {
     ensure_cache_populated();
-    let result_vec: Vec<(_, _, _, _)> = CURRENCY_DATA_MAP.share().iter()
+    let result_vec: Vec<(_, _, _, _)> = CURRENCY_DATA_MAP
+        .share()
+        .iter()
         .flat_map(|((from_id, to_id), data_vec)| {
             data_vec.iter().map(move |date_rate| unsafe {
                 let date = pgrx::Date::from_pg_epoch_days(date_rate.0);
@@ -406,22 +405,23 @@ fn kq_fx_display_cache() -> TableIterator<'static,
             })
         })
         .collect();
-    TableIterator::new(
-        result_vec
-    )
+    TableIterator::new(result_vec)
 }
 
 #[pg_extern(parallel_safe)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> f64 {
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
-    if let Some(dates_rates) = CURRENCY_DATA_MAP.share().get(&(currency_id, to_currency_id)) {
+    if let Some(dates_rates) = CURRENCY_DATA_MAP
+        .share()
+        .get(&(currency_id, to_currency_id))
+    {
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
             Ok(index) => {
                 // debug1!("Found rate exactly with date: {}", date);
                 dates_rates[index].1
-            },
+            }
             Err(index) => {
                 if index > 0 {
                     // debug1!("Found previous rate with date: {}", date);
@@ -464,11 +464,6 @@ fn kq_fx_get_rate_xuid(
     kq_fx_get_rate(*from_id, *to_id, date)
 }
 
-#[pg_extern]
-fn hello_versioned_so() -> &'static str {
-    "Hello, versioned_so"
-}
-
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
@@ -478,18 +473,17 @@ mod tests {
 
     #[pg_test]
     fn test_validate_db() {
-        assert_eq!("Database is compatible with the extension.", crate::kq_fx_check_db());
+        assert_eq!(
+            "Database is compatible with the extension.",
+            crate::kq_fx_check_db()
+        );
     }
 
     #[pg_test]
     fn test_get_rate_by_id() {
         assert_eq!(
             0.6583555372901019,
-            crate::kq_fx_get_rate(
-                1,
-                2,
-                pgrx::Date::new(2010, 2, 1).unwrap()
-            )
+            crate::kq_fx_get_rate(1, 2, pgrx::Date::new(2010, 2, 1).unwrap())
         );
         assert_eq!(
             1.6285458614035657,
@@ -505,19 +499,11 @@ mod tests {
     fn test_get_rate_by_xuid() {
         assert_eq!(
             0.6583555372901019,
-            crate::kq_fx_get_rate_xuid(
-                "usd",
-                "cad",
-                pgrx::Date::new(2010, 2, 1).unwrap()
-            )
+            crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2010, 2, 1).unwrap())
         );
         assert_eq!(
             1.6285458614035657,
-            crate::kq_fx_get_rate_xuid(
-                "aud",
-                "nzd",
-                pgrx::Date::new(2030, 1, 10).unwrap()
-            )
+            crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
         );
     }
 }
@@ -530,8 +516,6 @@ pub mod pg_test {
         // perform one-off initialization when the pg_test framework starts
     }
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec![
-            "shared_preload_libraries = 'kq_fx'"
-        ]
+        vec!["shared_preload_libraries = 'kq_fx'"]
     }
 }
