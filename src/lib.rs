@@ -7,7 +7,6 @@ use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucS
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::CStr;
-use toml::from_str;
 
 // Max allocation params
 
@@ -195,7 +194,11 @@ fn ensure_cache_populated() {
         currency_count
     );
     // Load Currencies (id, xuid and entry count)
+    let mut currencies_count: i64 = 0;
+    let mut total_entry_count: i64 = 0;
     Spi::connect(|client| {
+        let mut id_data_map = CURRENCY_ID_METADATA_MAP.exclusive();
+        let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
         let select = client.select(&get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
         match select {
             Ok(tuple_table) => {
@@ -210,19 +213,16 @@ fn ensure_cache_populated() {
                         entry_count,
                     };
 
-                    CURRENCY_ID_METADATA_MAP
-                        .exclusive()
+                    id_data_map
                         .insert(id, currency_metadata)
                         .unwrap();
 
-                    CURRENCY_XUID_MAP.exclusive().insert(xuid, id).unwrap();
+                    xuid_map
+                        .insert(xuid, id)
+                        .unwrap();
 
-                    let currency_control = CURRENCY_CONTROL.share().clone();
-                    *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-                        currency_count: currency_control.currency_count + 1,
-                        entry_count: currency_control.entry_count + entry_count,
-                        ..currency_control
-                    };
+                    total_entry_count += entry_count;
+                    currencies_count += 1;
 
                     debug1!(
                         "Currency initialized. ID: {}, xuid: {}, entries: {}",
@@ -237,8 +237,21 @@ fn ensure_cache_populated() {
             }
         }
     });
+
+    {
+        // Update control struct
+        let currency_control = CURRENCY_CONTROL.share().clone();
+        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+            currency_count: currencies_count,
+            entry_count: total_entry_count,
+            ..currency_control
+        };
+    }
+
     let mut entry_count: i64 = 0;
+
     Spi::connect(|client| {
+        let mut data_map = CURRENCY_DATA_MAP.exclusive();
         let select = client.select(&crate::get_guc_string(&Q4_GET_CURRENCY_ENTRIES), None, None);
         match select {
             Ok(tuple_table) => {
@@ -248,7 +261,7 @@ fn ensure_cache_populated() {
                     let date: pgrx::Date = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
                     debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
-                    let mut data_map = CURRENCY_DATA_MAP.exclusive();
+                    // let mut data_map = CURRENCY_DATA_MAP.exclusive();
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
                         let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
                             heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
@@ -280,7 +293,7 @@ fn ensure_cache_populated() {
 
     let currency_control = CURRENCY_CONTROL.share().clone();
 
-    if currency_control.entry_count == entry_count {
+    if total_entry_count == entry_count {
         *CURRENCY_CONTROL.exclusive() = CurrencyControl {
             cache_filled: true,
             ..currency_control
@@ -451,28 +464,74 @@ fn kq_fx_get_rate_xuid(
     kq_fx_get_rate(*from_id, *to_id, date)
 }
 
-// #[cfg(any(test, feature = "pg_test"))]
-// #[pg_schema]
-// mod tests {
-//     use pgrx::prelude::*;
-//
-//     #[pg_test]
-//     fn test_hello_kq_fx_currency() {
-//         assert_eq!("Hello, kq_fx_currency", crate::hello_kq_fx_currency());
-//     }
-//
-// }
+#[pg_extern]
+fn hello_versioned_so() -> &'static str {
+    "Hello, versioned_so"
+}
+
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+mod tests {
+    use pgrx::prelude::*;
+
+    extension_sql_file!("../sql/test_data.sql");
+
+    #[pg_test]
+    fn test_validate_db() {
+        assert_eq!("Database is compatible with the extension.", crate::kq_fx_check_db());
+    }
+
+    #[pg_test]
+    fn test_get_rate_by_id() {
+        assert_eq!(
+            0.6583555372901019,
+            crate::kq_fx_get_rate(
+                1,
+                2,
+                pgrx::Date::new(2010, 2, 1).unwrap()
+            )
+        );
+        assert_eq!(
+            1.6285458614035657,
+            crate::kq_fx_get_rate(
+                3590000203070,
+                3590000231158,
+                pgrx::Date::new(2030, 1, 10).unwrap()
+            )
+        );
+    }
+
+    #[pg_test]
+    fn test_get_rate_by_xuid() {
+        assert_eq!(
+            0.6583555372901019,
+            crate::kq_fx_get_rate_xuid(
+                "usd",
+                "cad",
+                pgrx::Date::new(2010, 2, 1).unwrap()
+            )
+        );
+        assert_eq!(
+            1.6285458614035657,
+            crate::kq_fx_get_rate_xuid(
+                "aud",
+                "nzd",
+                pgrx::Date::new(2030, 1, 10).unwrap()
+            )
+        );
+    }
+}
 
 // This module is required by `cargo pgrx test` invocations.
 // It must be visible at the root of your extension crate.
-// #[cfg(test)]
-// pub mod pg_test {
-//     pub fn setup(_options: Vec<&str>) {
-//         // perform one-off initialization when the pg_test framework starts
-//     }
-//
-//     pub fn postgresql_conf_options() -> Vec<&'static str> {
-//         // return any postgresql.conf settings that are required for your tests
-//         vec![]
-//     }
-// }
+#[cfg(test)]
+pub mod pg_test {
+    pub fn setup(_options: Vec<&str>) {
+        // perform one-off initialization when the pg_test framework starts
+    }
+    pub fn postgresql_conf_options() -> Vec<&'static str> {
+        vec![
+            "shared_preload_libraries = 'kq_fx'"
+        ]
+    }
+}
