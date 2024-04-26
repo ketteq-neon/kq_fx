@@ -416,6 +416,16 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> f64 {
         .share()
         .get(&(currency_id, to_currency_id))
     {
+        let &(first_date, first_rate) = dates_rates.first().unwrap();
+        if date < first_date {
+            return -1f64;
+        } else if date == first_date {
+            return first_rate;
+        }
+        let &(last_date, last_rate) = dates_rates.last().unwrap();
+        if date >= last_date {
+            return last_rate;
+        }
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
             Ok(index) => {
@@ -504,6 +514,30 @@ mod tests {
         assert_eq!(
             1.6285458614035657,
             crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
+        );
+    }
+
+    #[pg_test]
+    fn test_try_get_less_than_min_date() {
+        assert_eq!(
+            -1f64,
+            crate::kq_fx_get_rate(
+                2,
+                1,
+                pgrx::Date::new(1999, 1, 1).unwrap()
+            )
+        );
+    }
+
+    #[pg_test]
+    fn test_try_get_greater_than_max_date() {
+        assert_eq!(
+            1.3539f64,
+            crate::kq_fx_get_rate(
+                2,
+                1,
+                pgrx::Date::new(2100, 1, 1).unwrap() // Max Date: 2024-03-01
+            )
         );
     }
 }
