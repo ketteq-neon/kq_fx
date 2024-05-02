@@ -123,7 +123,7 @@ unsafe fn init_gucs() {
     );
     GucRegistry::define_string_guc(
         "kq.currency.q2_get_currencies_ids",
-        "",
+        "Query to get all the currencies IDs.",
         "",
         &Q2_GET_CURRENCIES_IDS,
         GucContext::Suset,
@@ -131,7 +131,7 @@ unsafe fn init_gucs() {
     );
     GucRegistry::define_string_guc(
         "kq.currency.q3_get_currencies_entry_count",
-        "",
+        "Query to get the currencies entry count.",
         "",
         &Q3_GET_CURRENCIES_ENTRY_COUNT,
         GucContext::Suset,
@@ -139,7 +139,7 @@ unsafe fn init_gucs() {
     );
     GucRegistry::define_string_guc(
         "kq.currency.q4_get_currency_entries",
-        "",
+        "Query to actually get the currencies and store it in the shared memory cache.",
         "",
         &Q4_GET_CURRENCY_ENTRIES,
         GucContext::Suset,
@@ -437,17 +437,13 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> f64 {
                     // debug1!("Found previous rate with date: {}", date);
                     dates_rates[index - 1].1
                 } else {
-                    if cfg!(feature = "next-rate") && index < dates_rates.len() {
-                        // debug1!("Found future rate with date: {}", date);
-                        dates_rates[index].1
-                    } else {
-                        error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
-                    }
+                    -1f64
                 }
             }
         }
     } else {
-        error!("There are no rates for this currency pair: from_id: {}, to_id: {}. If the rates table was recently updated, a cache reload is necessary. Run `SELECT kq_fx_invalidate_cache()`.", currency_id, to_currency_id);
+        // debug1!("There are no rates for this currency pair: from_id: {}, to_id: {}.", currency_id, to_currency_id);
+        -1f64
     }
 }
 
@@ -521,11 +517,7 @@ mod tests {
     fn test_try_get_less_than_min_date() {
         assert_eq!(
             -1f64,
-            crate::kq_fx_get_rate(
-                2,
-                1,
-                pgrx::Date::new(1999, 1, 1).unwrap()
-            )
+            crate::kq_fx_get_rate(2, 1, pgrx::Date::new(1999, 1, 1).unwrap())
         );
     }
 
