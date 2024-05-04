@@ -409,7 +409,7 @@ fn kq_fx_display_cache() -> TableIterator<
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> f64 {
+fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Option<f64> {
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP
@@ -418,32 +418,32 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> f64 {
     {
         let &(first_date, first_rate) = dates_rates.first().unwrap();
         if date < first_date {
-            return -1f64;
+            return None;
         } else if date == first_date {
-            return first_rate;
+            return Some(first_rate);
         }
         let &(last_date, last_rate) = dates_rates.last().unwrap();
         if date >= last_date {
-            return last_rate;
+            return Some(last_rate);
         }
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
             Ok(index) => {
                 // debug1!("Found rate exactly with date: {}", date);
-                dates_rates[index].1
+                Some(dates_rates[index].1)
             }
             Err(index) => {
                 if index > 0 {
                     // debug1!("Found previous rate with date: {}", date);
-                    dates_rates[index - 1].1
+                    Some(dates_rates[index - 1].1)
                 } else {
-                    -1f64
+                    None
                 }
             }
         }
     } else {
         // debug1!("There are no rates for this currency pair: from_id: {}, to_id: {}.", currency_id, to_currency_id);
-        -1f64
+        None
     }
 }
 
@@ -452,7 +452,7 @@ fn kq_fx_get_rate_xuid(
     currency_xuid: &'static str,
     to_currency_xuid: &'static str,
     date: ExtDate,
-) -> f64 {
+) -> Option<f64> {
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
     let from_id = match xuid_map.get(currency_xuid) {
@@ -488,11 +488,11 @@ mod tests {
     #[pg_test]
     fn test_get_rate_by_id() {
         assert_eq!(
-            0.6583555372901019,
+            Some(0.6583555372901019f64),
             crate::kq_fx_get_rate(1, 2, pgrx::Date::new(2010, 2, 1).unwrap())
         );
         assert_eq!(
-            1.6285458614035657,
+            Some(1.6285458614035657f64),
             crate::kq_fx_get_rate(
                 3590000203070,
                 3590000231158,
@@ -504,11 +504,11 @@ mod tests {
     #[pg_test]
     fn test_get_rate_by_xuid() {
         assert_eq!(
-            0.6583555372901019,
+            Some(0.6583555372901019f64),
             crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2010, 2, 1).unwrap())
         );
         assert_eq!(
-            1.6285458614035657,
+            Some(1.6285458614035657f64),
             crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
         );
     }
@@ -516,7 +516,7 @@ mod tests {
     #[pg_test]
     fn test_try_get_less_than_min_date() {
         assert_eq!(
-            -1f64,
+            None,
             crate::kq_fx_get_rate(2, 1, pgrx::Date::new(1999, 1, 1).unwrap())
         );
     }
@@ -524,7 +524,7 @@ mod tests {
     #[pg_test]
     fn test_try_get_greater_than_max_date() {
         assert_eq!(
-            1.3539f64,
+            Some(1.3539f64),
             crate::kq_fx_get_rate(
                 2,
                 1,

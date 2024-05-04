@@ -16,7 +16,7 @@ pg_test = []
 
 [dependencies]
 heapless = "=0.7.17"
-pgrx = { version =  "=0.11.3", default-features = false }
+pgrx = { version =  "=0.11.4", default-features = false }
 serde = { version = "1.0.197", features = ["derive"] }
 toml = "0.8.12"
 
