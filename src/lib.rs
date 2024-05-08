@@ -104,12 +104,12 @@ pub extern "C" fn _PG_init() {
     unsafe {
         init_gucs();
     }
-    info!("ketteQ FX Currency Cache Extension Loaded (kq_fx_currency)");
+    info!("ketteQ FX Currency Cache Extension Loaded (kq_fx)");
 }
 
 #[pg_guard]
 pub extern "C" fn _PG_fini() {
-    info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx_currency)");
+    info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx)");
 }
 
 unsafe fn init_gucs() {

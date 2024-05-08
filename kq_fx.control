@@ -1,4 +1,4 @@
-comment = 'kq_fx_currency:  ketteQ, Inc.'
+comment = 'kq_fx:  ketteQ, Inc.'
 default_version = '@CARGO_VERSION@'
 module_pathname = '$libdir/kq_fx'
 relocatable = false

@@ -58,8 +58,8 @@ To set a specific target PostgreSQL version, add `pg14` or `pg15` at the end of 
 
 ## Install
 
-After the shared library is built, you can manually install using the `kq_fx_currency.control`, `SCHEMA_FILE.sql` 
-and the shared library `libkq_fx_currency.so`.
+After the shared library is built, you can manually install using the `kq_fx.control`, `SCHEMA_FILE.sql` 
+and the shared library `libkq_fx.so`.
 
 ### Automatic install
 
