@@ -1,5 +1,5 @@
 [package]
-name = "kq_fx_currency"
+name = "kq_fx"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -7,18 +7,16 @@ authors = [ 'Giancarlo A. Chiappe' ]
 
 [lib]
 crate-type = ["cdylib"]
-name = "kq_fx"
 
 [features]
 default = ["pg15"]
 pg15 = ["pgrx/pg15", "pgrx-tests/pg15" ]
 pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
 pg_test = []
-get-next-rate = []
 
 [dependencies]
 heapless = "=0.7.17"
-pgrx = { version =  "=0.11.3", default-features = false }
+pgrx = { version =  "=0.11.4", default-features = false }
 serde = { version = "1.0.197", features = ["derive"] }
 toml = "0.8.12"
 

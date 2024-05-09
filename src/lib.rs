@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use heapless::Entry;
 use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
@@ -6,13 +5,13 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::CStr;
 
 // Max allocation params
 
 const MAX_ENTRIES: usize = 8 * 1024;
-const MAX_CURRENCIES: usize = 1 * 1024;
+const MAX_CURRENCIES: usize = 1024;
 
 // Default Queries
 
@@ -53,39 +52,31 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 ::pgrx::pg_module_magic!();
 
 // Control Struct
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
     currency_count: i64,
     entry_count: i64,
 }
-impl Default for CurrencyControl {
-    fn default() -> Self {
-        CurrencyControl {
-            cache_filled: false,
-            currency_count: 0,
-            entry_count: 0,
-        }
-    }
-}
 unsafe impl PGRXSharedMemory for CurrencyControl {}
 
 // Currency Metadata Struct
-#[derive(Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone, Debug)]
 pub struct Currency {
     entry_count: i64,
     id: i64,
     xuid: &'static str,
 }
-impl Default for Currency {
-    fn default() -> Self {
-        Currency {
-            entry_count: 0,
-            id: 0,
-            xuid: "",
-        }
-    }
-}
+
+type ExtDate = pgrx::Date;
+type StoreDate = i32;
+type FromToIdPair = (i64, i64);
+type StoreDateRatePair = (StoreDate, f64);
+
+type CurrencyDataMap = PgLwLock<
+    heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
+>;
+
 unsafe impl PGRXSharedMemory for Currency {}
 
 // Shared Memory Hashmaps
@@ -98,9 +89,7 @@ static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i64, MAX_
 static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i64, Currency, MAX_CURRENCIES>> =
     PgLwLock::new();
 /// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
-static CURRENCY_DATA_MAP: PgLwLock<
-    heapless::FnvIndexMap<(i64, i64), heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES>, MAX_ENTRIES>,
-> = PgLwLock::new();
+static CURRENCY_DATA_MAP: CurrencyDataMap = PgLwLock::new();
 
 // Init Extension - Shared Memory
 #[pg_guard]
@@ -115,12 +104,12 @@ pub extern "C" fn _PG_init() {
     unsafe {
         init_gucs();
     }
-    info!("ketteQ FX Currency Cache Extension Loaded (kq_fx_currency)");
+    info!("ketteQ FX Currency Cache Extension Loaded (kq_fx)");
 }
 
 #[pg_guard]
 pub extern "C" fn _PG_fini() {
-    info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx_currency)");
+    info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx)");
 }
 
 unsafe fn init_gucs() {
@@ -134,7 +123,7 @@ unsafe fn init_gucs() {
     );
     GucRegistry::define_string_guc(
         "kq.currency.q2_get_currencies_ids",
-        "",
+        "Query to get all the currencies IDs.",
         "",
         &Q2_GET_CURRENCIES_IDS,
         GucContext::Suset,
@@ -142,7 +131,7 @@ unsafe fn init_gucs() {
     );
     GucRegistry::define_string_guc(
         "kq.currency.q3_get_currencies_entry_count",
-        "",
+        "Query to get the currencies entry count.",
         "",
         &Q3_GET_CURRENCIES_ENTRY_COUNT,
         GucContext::Suset,
@@ -150,7 +139,7 @@ unsafe fn init_gucs() {
     );
     GucRegistry::define_string_guc(
         "kq.currency.q4_get_currency_entries",
-        "",
+        "Query to actually get the currencies and store it in the shared memory cache.",
         "",
         &Q4_GET_CURRENCY_ENTRIES,
         GucContext::Suset,
@@ -205,7 +194,11 @@ fn ensure_cache_populated() {
         currency_count
     );
     // Load Currencies (id, xuid and entry count)
+    let mut currencies_count: i64 = 0;
+    let mut total_entry_count: i64 = 0;
     Spi::connect(|client| {
+        let mut id_data_map = CURRENCY_ID_METADATA_MAP.exclusive();
+        let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
         let select = client.select(&get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
         match select {
             Ok(tuple_table) => {
@@ -218,22 +211,14 @@ fn ensure_cache_populated() {
                         id,
                         xuid,
                         entry_count,
-                        ..Currency::default()
                     };
 
-                    CURRENCY_ID_METADATA_MAP
-                        .exclusive()
-                        .insert(id, currency_metadata)
-                        .unwrap();
+                    id_data_map.insert(id, currency_metadata).unwrap();
 
-                    CURRENCY_XUID_MAP.exclusive().insert(xuid, id).unwrap();
+                    xuid_map.insert(xuid, id).unwrap();
 
-                    let currency_control = CURRENCY_CONTROL.share().clone();
-                    *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-                        currency_count: currency_control.currency_count + 1,
-                        entry_count: currency_control.entry_count + entry_count,
-                        ..currency_control
-                    };
+                    total_entry_count += entry_count;
+                    currencies_count += 1;
 
                     debug1!(
                         "Currency initialized. ID: {}, xuid: {}, entries: {}",
@@ -248,29 +233,42 @@ fn ensure_cache_populated() {
             }
         }
     });
+
+    {
+        // Update control struct
+        let currency_control = CURRENCY_CONTROL.share().clone();
+        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+            currency_count: currencies_count,
+            entry_count: total_entry_count,
+            ..currency_control
+        };
+    }
+
     let mut entry_count: i64 = 0;
+
     Spi::connect(|client| {
+        let mut data_map = CURRENCY_DATA_MAP.exclusive();
         let select = client.select(&crate::get_guc_string(&Q4_GET_CURRENCY_ENTRIES), None, None);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
                     let from_id: i64 = row[1].value().unwrap().unwrap();
                     let to_id: i64 = row[2].value().unwrap().unwrap();
-                    let date: ::pgrx::Date = row[3].value().unwrap().unwrap();
+                    let date: pgrx::Date = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
                     debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
-                    let mut data_map = CURRENCY_DATA_MAP.exclusive();
+                    // let mut data_map = CURRENCY_DATA_MAP.exclusive();
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let mut new_data_vec: heapless::Vec<(pgrx::Date, f64), MAX_ENTRIES> =
-                            heapless::Vec::<(pgrx::Date, f64), MAX_ENTRIES>::new();
+                        let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                            heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
                         new_data_vec
-                            .push((date, rate))
+                            .push((date.to_pg_epoch_days(), rate))
                             .expect("cannot insert more elements into date,rate vector");
                         v.insert(new_data_vec).unwrap();
                     } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
                         let data_vec = o.get_mut();
                         data_vec
-                            .push((date, rate))
+                            .push((date.to_pg_epoch_days(), rate))
                             .expect("cannot insert more elements into date,rate vector");
                     }
                     entry_count += 1;
@@ -291,7 +289,7 @@ fn ensure_cache_populated() {
 
     let currency_control = CURRENCY_CONTROL.share().clone();
 
-    if currency_control.entry_count == entry_count {
+    if total_entry_count == entry_count {
         *CURRENCY_CONTROL.exclusive() = CurrencyControl {
             cache_filled: true,
             ..currency_control
@@ -386,46 +384,66 @@ fn kq_fx_invalidate_cache() -> &'static str {
     "Cache invalidated."
 }
 
-#[pg_extern(parallel_safe)]
-fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Option<f64> {
+#[pg_extern]
+fn kq_fx_display_cache() -> TableIterator<
+    'static,
+    (
+        name!(currency_id, i64),
+        name!(to_currency_id, i64),
+        name!(date, ExtDate),
+        name!(rate, f64),
+    ),
+> {
     ensure_cache_populated();
+    let result_vec: Vec<(_, _, _, _)> = CURRENCY_DATA_MAP
+        .share()
+        .iter()
+        .flat_map(|((from_id, to_id), data_vec)| {
+            data_vec.iter().map(move |date_rate| unsafe {
+                let date = pgrx::Date::from_pg_epoch_days(date_rate.0);
+                (*from_id, *to_id, date, date_rate.1)
+            })
+        })
+        .collect();
+    TableIterator::new(result_vec)
+}
+
+#[pg_extern(parallel_safe)]
+fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Option<f64> {
+    ensure_cache_populated();
+    let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        // Create a referenced binary tree map from the shared rates vector
-        let btree: BTreeMap<_, _> = dates_rates
-            .iter()
-            .map(|(k, v)| (*k, v))
-            .collect();
-        // This will match the exact date and also the last date that has a rate before the requested one.
-        let date_rate = btree.range(..=date).next_back();
-        if date_rate.is_some() {
-            date_rate.map(|(date, &rate)| {
-                debug1!("Found rate exact/previous with date: {}", date);
-                *rate
-            })
-        } else {
-            // Enable the "get-next-rate" feature if we want to get the next future rate if
-            // no dates before the requested date exists. This can be converted to a
-            // GUC or removed if is not necessary.
-            if cfg!(feature = "get-next-rate") {
-                let next_date_rate = btree.range(date..).next();
-                if next_date_rate.is_some() {
-                    return next_date_rate.map(|(date, &rate)| {
-                        debug1!("Found future rate with date: {}", date);
-                        *rate
-                    });
+        let &(first_date, first_rate) = dates_rates.first().unwrap();
+        if date < first_date {
+            return None;
+        } else if date == first_date {
+            return Some(first_rate);
+        }
+        let &(last_date, last_rate) = dates_rates.last().unwrap();
+        if date >= last_date {
+            return Some(last_rate);
+        }
+        let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
+        match result {
+            Ok(index) => {
+                // debug1!("Found rate exactly with date: {}", date);
+                Some(dates_rates[index].1)
+            }
+            Err(index) => {
+                if index > 0 {
+                    // debug1!("Found previous rate with date: {}", date);
+                    Some(dates_rates[index - 1].1)
+                } else {
+                    None
                 }
             }
-            error!("No rate found for the date: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.", date);
         }
     } else {
-        error!(
-            "There are no rates with this combination: from_id: {}, to_id: {}. If rates table was recently updated, a cache reload is necessary, run `SELECT kq_fx_invalidate_cache()`.",
-            currency_id,
-            to_currency_id
-        );
+        // debug1!("There are no rates for this currency pair: from_id: {}, to_id: {}.", currency_id, to_currency_id);
+        None
     }
 }
 
@@ -433,7 +451,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: pgrx::Date) -> Op
 fn kq_fx_get_rate_xuid(
     currency_xuid: &'static str,
     to_currency_xuid: &'static str,
-    date: pgrx::Date,
+    date: ExtDate,
 ) -> Option<f64> {
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
@@ -452,28 +470,78 @@ fn kq_fx_get_rate_xuid(
     kq_fx_get_rate(*from_id, *to_id, date)
 }
 
-// #[cfg(any(test, feature = "pg_test"))]
-// #[pg_schema]
-// mod tests {
-//     use pgrx::prelude::*;
-//
-//     #[pg_test]
-//     fn test_hello_kq_fx_currency() {
-//         assert_eq!("Hello, kq_fx_currency", crate::hello_kq_fx_currency());
-//     }
-//
-// }
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+mod tests {
+    use pgrx::prelude::*;
+
+    extension_sql_file!("../sql/test_data.sql");
+
+    #[pg_test]
+    fn test_validate_db() {
+        assert_eq!(
+            "Database is compatible with the extension.",
+            crate::kq_fx_check_db()
+        );
+    }
+
+    #[pg_test]
+    fn test_get_rate_by_id() {
+        assert_eq!(
+            Some(0.6583555372901019f64),
+            crate::kq_fx_get_rate(1, 2, pgrx::Date::new(2010, 2, 1).unwrap())
+        );
+        assert_eq!(
+            Some(1.6285458614035657f64),
+            crate::kq_fx_get_rate(
+                3590000203070,
+                3590000231158,
+                pgrx::Date::new(2030, 1, 10).unwrap()
+            )
+        );
+    }
+
+    #[pg_test]
+    fn test_get_rate_by_xuid() {
+        assert_eq!(
+            Some(0.6583555372901019f64),
+            crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2010, 2, 1).unwrap())
+        );
+        assert_eq!(
+            Some(1.6285458614035657f64),
+            crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
+        );
+    }
+
+    #[pg_test]
+    fn test_try_get_less_than_min_date() {
+        assert_eq!(
+            None,
+            crate::kq_fx_get_rate(2, 1, pgrx::Date::new(1999, 1, 1).unwrap())
+        );
+    }
+
+    #[pg_test]
+    fn test_try_get_greater_than_max_date() {
+        assert_eq!(
+            Some(1.3539f64),
+            crate::kq_fx_get_rate(
+                2,
+                1,
+                pgrx::Date::new(2100, 1, 1).unwrap() // Max Date: 2024-03-01
+            )
+        );
+    }
+}
 
 // This module is required by `cargo pgrx test` invocations.
 // It must be visible at the root of your extension crate.
-// #[cfg(test)]
-// pub mod pg_test {
-//     pub fn setup(_options: Vec<&str>) {
-//         // perform one-off initialization when the pg_test framework starts
-//     }
-//
-//     pub fn postgresql_conf_options() -> Vec<&'static str> {
-//         // return any postgresql.conf settings that are required for your tests
-//         vec![]
-//     }
-// }
+#[cfg(test)]
+pub mod pg_test {
+    pub fn setup(_options: Vec<&str>) {
+        // perform one-off initialization when the pg_test framework starts
+    }
+    pub fn postgresql_conf_options() -> Vec<&'static str> {
+        vec!["shared_preload_libraries = 'kq_fx'"]
+    }
+}
