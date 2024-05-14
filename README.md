@@ -1,6 +1,6 @@
 # KetteQ FX Currency Cache
 
-© ketteQ, Inc.
+© ketteQ
 
 ketteQ FX Currency Cache is a PostgreSQL server extension that caches calendar-based currency
 conversion information into the server's shared memory, loading one time and making it available to
