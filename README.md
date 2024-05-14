@@ -1,4 +1,4 @@
-# KetteQ FX Currency Cache
+# ketteQ FX Cache
 
 © ketteQ
 
