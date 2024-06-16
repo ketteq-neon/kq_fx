@@ -55,18 +55,9 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 #[derive(Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
-    currency_count: i64,
     entry_count: i64,
 }
 unsafe impl PGRXSharedMemory for CurrencyControl {}
-
-// Currency Metadata Struct
-#[derive(Default, Copy, Clone, Debug)]
-pub struct Currency {
-    entry_count: i64,
-    id: i64,
-    xuid: &'static str,
-}
 
 type ExtDate = pgrx::Date;
 type StoreDate = i32;
@@ -77,16 +68,11 @@ type CurrencyDataMap = PgLwLock<
     heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
 >;
 
-unsafe impl PGRXSharedMemory for Currency {}
-
 // Shared Memory Hashmaps
 
 static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
 /// CURRENCY_ID => CURRENCY_XUID
 static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i64, MAX_CURRENCIES>> =
-    PgLwLock::new();
-/// CURRENCY_ID => CURRENCY_METADATA
-static CURRENCY_ID_METADATA_MAP: PgLwLock<heapless::FnvIndexMap<i64, Currency, MAX_CURRENCIES>> =
     PgLwLock::new();
 /// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
 static CURRENCY_DATA_MAP: CurrencyDataMap = PgLwLock::new();
@@ -99,7 +85,6 @@ pub extern "C" fn _PG_init() {
     // }
     pg_shmem_init!(CURRENCY_CONTROL);
     pg_shmem_init!(CURRENCY_XUID_MAP);
-    pg_shmem_init!(CURRENCY_ID_METADATA_MAP);
     pg_shmem_init!(CURRENCY_DATA_MAP);
     unsafe {
         init_gucs();
@@ -187,15 +172,11 @@ fn ensure_cache_populated() {
         error!("Min currency ID cannot be greater that max currency ID. Cannot init cache.")
     }
     let currency_count = max_id - min_id + 1;
-    debug2!(
-        "Currencies: {}",
-        currency_count
-    );
+    debug2!("Currencies: {}", currency_count);
     // Load Currencies (id, xuid and entry count)
     let mut currencies_count: i64 = 0;
     let mut total_entry_count: i64 = 0;
     Spi::connect(|client| {
-        let mut id_data_map = CURRENCY_ID_METADATA_MAP.exclusive();
         let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
         let select = client.select(&get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
         match select {
@@ -204,14 +185,6 @@ fn ensure_cache_populated() {
                     let id: i64 = row[1].value().unwrap().unwrap();
                     let xuid: &str = row[2].value().unwrap().unwrap();
                     let entry_count: i64 = row[3].value().unwrap().unwrap();
-
-                    let currency_metadata = Currency {
-                        id,
-                        xuid,
-                        entry_count,
-                    };
-
-                    id_data_map.insert(id, currency_metadata).unwrap();
 
                     xuid_map.insert(xuid, id).unwrap();
 
@@ -236,7 +209,6 @@ fn ensure_cache_populated() {
         // Update control struct
         let currency_control = CURRENCY_CONTROL.share().clone();
         *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-            currency_count: currencies_count,
             entry_count: total_entry_count,
             ..currency_control
         };
@@ -453,7 +425,7 @@ fn kq_fx_get_rate_xuid(
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
     let currency_xuid = currency_xuid.to_lowercase();
-    let currency_xuid : &str = &currency_xuid;
+    let currency_xuid: &str = &currency_xuid;
     let from_id = match xuid_map.get(currency_xuid) {
         None => {
             error!("From currency xuid not found. {currency_xuid}")
