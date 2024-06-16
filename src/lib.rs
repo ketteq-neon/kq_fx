@@ -150,10 +150,10 @@ unsafe fn init_gucs() {
 // Cache management internals
 
 fn ensure_cache_populated() {
-    debug1!("ensure_cache_populated()");
+    debug3!("ensure_cache_populated()");
     let control = CURRENCY_CONTROL.share().clone();
     if control.cache_filled {
-        debug1!("Cache already filled. Skipping loading from DB.");
+        debug2!("Cache already filled. Skipping loading from DB.");
         return;
     }
     validate_compatible_db();
@@ -187,10 +187,8 @@ fn ensure_cache_populated() {
         error!("Min currency ID cannot be greater that max currency ID. Cannot init cache.")
     }
     let currency_count = max_id - min_id + 1;
-    debug1!(
-        "Min ID: {}, Max ID: {}, Currencies: {}",
-        min_id,
-        max_id,
+    debug2!(
+        "Currencies: {}",
         currency_count
     );
     // Load Currencies (id, xuid and entry count)
@@ -256,8 +254,7 @@ fn ensure_cache_populated() {
                     let to_id: i64 = row[2].value().unwrap().unwrap();
                     let date: pgrx::Date = row[3].value().unwrap().unwrap();
                     let rate: f64 = row[4].value().unwrap().unwrap();
-                    debug1!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
-                    // let mut data_map = CURRENCY_DATA_MAP.exclusive();
+                    debug2!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
                         let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
                             heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
@@ -272,7 +269,7 @@ fn ensure_cache_populated() {
                             .expect("cannot insert more elements into date,rate vector");
                     }
                     entry_count += 1;
-                    debug1!(
+                    debug2!(
                         "Inserted into shared cache: ({},{}) => ({}, {})",
                         from_id,
                         to_id,
@@ -308,7 +305,7 @@ fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
     let value = String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes())
         .to_string()
         .replace('\n', " ");
-    debug1!("Query: {value}");
+    debug2!("Query: {value}");
     value
 }
 
@@ -373,13 +370,13 @@ fn kq_fx_check_db() -> &'static str {
 
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
-    debug1!("Waiting for lock...");
+    debug2!("Waiting for lock...");
     CURRENCY_XUID_MAP.exclusive().clear();
-    debug1!("CURRENCY_XUID_MAP cleared");
+    debug2!("CURRENCY_XUID_MAP cleared");
     CURRENCY_DATA_MAP.exclusive().clear();
-    debug1!("CURRENCY_DATA_MAP cleared");
+    debug2!("CURRENCY_DATA_MAP cleared");
     *CURRENCY_CONTROL.exclusive() = CurrencyControl::default();
-    debug1!("CURRENCY_CONTROL reset");
+    debug2!("CURRENCY_CONTROL reset");
     debug1!("Cache invalidated");
     "Cache invalidated."
 }
@@ -455,6 +452,7 @@ fn kq_fx_get_rate_xuid(
 ) -> Option<f64> {
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
+    let currency_xuid = currency_xuid.to_lowercase().as_str();
     let from_id = match xuid_map.get(currency_xuid) {
         None => {
             error!("From currency xuid not found. {currency_xuid}")
