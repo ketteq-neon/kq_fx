@@ -52,7 +52,7 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 ::pgrx::pg_module_magic!();
 
 // Control Struct
-#[derive(Copy, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
     currency_count: i64,
@@ -452,7 +452,8 @@ fn kq_fx_get_rate_xuid(
 ) -> Option<f64> {
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
-    let currency_xuid = currency_xuid.to_lowercase().as_str();
+    let currency_xuid = currency_xuid.to_lowercase();
+    let currency_xuid : &str = &currency_xuid;
     let from_id = match xuid_map.get(currency_xuid) {
         None => {
             error!("From currency xuid not found. {currency_xuid}")
