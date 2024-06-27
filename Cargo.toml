@@ -16,7 +16,7 @@ pg_test = []
 
 [dependencies]
 heapless = "=0.7.17"
-pgrx = { version =  "=0.11.4", default-features = false }
+pgrx = { version =  "=0.11.4", default-features = false, features = ["unsafe-postgres"] }
 
 [dev-dependencies]
 pgrx-tests = "0.11.4"
