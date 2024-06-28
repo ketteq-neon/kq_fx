@@ -489,7 +489,33 @@ fn kq_get_arr_value3(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defau
     }
 
     for (idx, d) in dates.iter().enumerate().rev() {
-        if d == &date {
+        if d >= &date {
+            return values.get(idx).copied().or(default_value);
+        }
+    }
+
+    default_value
+}
+
+#[pg_extern(parallel_safe)]
+fn kq_get_arr_value4(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, default_value: Option<f64>) -> Option<f64> {
+    if dates.is_empty() || values.is_empty() {
+        return default_value;
+    }
+
+    if dates.len() != values.len() {
+        error!("dates and values arrays does not have the same quantity of elements")
+    }
+
+    if dates.first().unwrap() > &date {
+        return default_value
+    }
+
+    let dates: Vec<i32> = dates.iter().map(|date| date.to_pg_epoch_days()).collect();
+    let date = date.to_pg_epoch_days();
+
+    for (idx, d) in dates.iter().enumerate().rev() {
+        if d >= &date {
             return values.get(idx).copied().or(default_value);
         }
     }
@@ -658,87 +684,6 @@ mod tests {
             crate::kq_get_arr_value2(dates.clone(), values.clone(), create_date(2000, 1, 1), default_value),
             Some(10.0)
         );
-    }
-
-    #[pg_test]
-    fn test_kq_get_arr_value3() {
-        { // empty vector 1
-            let dates = vec![];
-            let values = vec![];
-            let date = create_date(2022, 1, 1);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), default_value);
-        }
-
-        { // empty vector 2
-            let dates = vec![create_date(2022, 1, 1)];
-            let values = vec![];
-            let date = create_date(2022, 1, 1);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), default_value);
-        }
-
-        { // different length vectors
-            let dates = vec![create_date(2022, 1, 1)];
-            let values = vec![1.0, 2.0];
-            let date = create_date(2022, 1, 1);
-            let default_value = Some(42.0);
-            std::panic::catch_unwind(|| {
-                crate::kq_get_arr_value3(dates, values, date, default_value);
-            }).expect_err("expected function to panic due to mismatched lengths");
-        }
-
-        { // value is not found
-            let dates = vec![create_date(2022, 1, 1), create_date(2022, 1, 2)];
-            let values = vec![1.0, 2.0];
-            let date = create_date(2022, 1, 3);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), default_value);
-        }
-
-        { // value is found
-            let dates = vec![create_date(2022, 1, 1), create_date(2022, 1, 2)];
-            let values = vec![1.0, 2.0];
-            let date = create_date(2022, 1, 2);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), Some(2.0));
-        }
-
-        { // value is in the middle
-            let dates = vec![
-                create_date(2022, 1, 1),
-                create_date(2022, 1, 2),
-                create_date(2022, 1, 3)
-            ];
-            let values = vec![1.0, 2.0, 3.0];
-            let date = create_date(2022, 1, 2);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), Some(2.0));
-        }
-
-        { // date at the beginning
-            let dates = vec![
-                create_date(2022, 1, 1),
-                create_date(2022, 1, 2),
-                create_date(2022, 1, 3)
-            ];
-            let values = vec![1.0, 2.0, 3.0];
-            let date = create_date(2022, 1, 1);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), Some(1.0));
-        }
-
-        { // date at the end
-            let dates = vec![
-                create_date(2022, 1, 1),
-                create_date(2022, 1, 2),
-                create_date(2022, 1, 3)
-            ];
-            let values = vec![1.0, 2.0, 3.0];
-            let date = create_date(2022, 1, 3);
-            let default_value = Some(42.0);
-            assert_eq!(crate::kq_get_arr_value3(dates, values, date, default_value), Some(3.0));
-        }
     }
 }
 

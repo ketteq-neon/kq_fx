@@ -761,4 +761,4 @@ INSERT INTO plan.fx_rate (currency_id,to_currency_id,"date",rate) VALUES
                                                                       (3590000203070,3590000231158,'2030-11-01',1.2516953854271264),
                                                                       (3590000203070,3590000231158,'2030-12-01',1.032123786014365);
 
-SELECT pg_sleep(1);
+SELECT pg_sleep(2);
