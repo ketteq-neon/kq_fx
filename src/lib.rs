@@ -488,9 +488,9 @@ fn kq_get_arr_value3(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defau
         return default_value
     }
 
-    for (idx, d) in dates.iter().enumerate().rev() {
-        if d >= &date {
-            return values.get(idx).copied().or(default_value);
+    for idx in (0..dates.len()).rev() {
+        if dates[idx] <= date {
+            return values.get(idx).copied();
         }
     }
 
@@ -514,9 +514,9 @@ fn kq_get_arr_value4(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defau
     let dates: Vec<i32> = dates.iter().map(|date| date.to_pg_epoch_days()).collect();
     let date = date.to_pg_epoch_days();
 
-    for (idx, d) in dates.iter().enumerate().rev() {
-        if d >= &date {
-            return values.get(idx).copied().or(default_value);
+    for idx in (0..dates.len()).rev() {
+        if dates[idx] <= date {
+            return values.get(idx).copied();
         }
     }
 
