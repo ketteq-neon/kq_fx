@@ -507,9 +507,9 @@ fn kq_get_arr_value4(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defau
         error!("dates and values arrays does not have the same quantity of elements")
     }
 
-    if dates.first().unwrap() > &date {
-        return default_value
-    }
+    // if dates.first().unwrap() > &date {
+    //     return default_value
+    // }
 
     let dates: Vec<i32> = dates.iter().map(|date| date.to_pg_epoch_days()).collect();
     let date = date.to_pg_epoch_days();
