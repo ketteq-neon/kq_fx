@@ -369,19 +369,6 @@ fn kq_fx_check_db() -> &'static str {
     validate_compatible_db()
 }
 
-// #[pg_extern]
-// fn kq_fx_cache_status(
-// ) -> TableIterator<'static, (name!(property, &'static str), name!(value, &'static str))> {
-//     let cargo_toml_raw = include_str!("../Cargo.toml");
-//     let cargo_toml: CargoToml = ::toml::from_str(cargo_toml_raw).unwrap();
-//     let pgrx_version_dep = cargo_toml.dependencies.get("pgrx").unwrap();
-//     // let control = CURRENCY_CONTROL.share().clone();
-//     TableIterator::new(vec![
-//         ("PostgreSQL SDK Version", pg_sys::get_pg_version_string()),
-//         ("PGRX Version", format!("{pgrx_version_dep:#?}"))
-//     ])
-// }
-
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
     debug2!("Waiting for lock...");
@@ -427,34 +414,15 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        // info!("dates size for {currency_id}, {to_currency_id}: {}", dates_rates.len());
-
-        // let mut cc = 0;
-        // dates_rates.iter().for_each(|&(cache_date, _)| {
-        //     unsafe {
-        //         info!("{cc}: {currency_id}, {to_currency_id}: {}", PgDate::from_pg_epoch_days(cache_date));
-        //     }
-        //     cc += 1;
-        // });
-
-        let &(first_date, first_rate) = dates_rates.first().unwrap();
+                let &(first_date, first_rate) = dates_rates.first().unwrap();
         if date < first_date {
-            // unsafe {
-            //     info!("date is prior to first_date: {}, {}", PgDate::from_pg_epoch_days(date), PgDate::from_pg_epoch_days(first_date));
-            // }
             return None;
         } else if date == first_date {
-            // unsafe {
-            //     info!("date equals first_date {} => {first_date}", PgDate::from_pg_epoch_days(first_date));
-            // }
             return Some(first_rate)
         }
 
         let &(last_date, last_rate) = dates_rates.last().unwrap();
         if date >= last_date {
-            // unsafe {
-            //     info!("date equals or is greater than last_date {} => {last_rate}", PgDate::from_pg_epoch_days(last_date));
-            // }
             return Some(last_rate);
         }
 
@@ -462,31 +430,19 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
         match result {
             Ok(index) => {
                 let rate = dates_rates[index].1;
-                // unsafe {
-                //     info!("Found rate exactly with date: {}, rate: {rate}", PgDate::from_pg_epoch_days(date));
-                // }
                 Some(rate)
             }
             Err(index) => {
                 if index > 0 {
                     let index = index - 1;
                     let rate = dates_rates[index].1;
-                    // unsafe {
-                    //     let found_date = dates_rates[index].0;
-                    //     let found_date = PgDate::from_pg_epoch_days(found_date);
-                    //     info!("Found previous rate with date: {}, found: {found_date} => {rate}, idx: {index}", PgDate::from_pg_epoch_days(date));
-                    // }
                     Some(rate)
                 } else {
-                    // unsafe {
-                    //     info!("Not found date: {}", PgDate::from_pg_epoch_days(date));
-                    // }
                     None
                 }
             }
         }
     } else {
-        // info!("There are no rates for this currency pair: from_id: {}, to_id: {}.", currency_id, to_currency_id);
         None
     }
 }
