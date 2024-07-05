@@ -28,8 +28,7 @@ FROM plan.currency cu
 GROUP by cu.id
 ORDER by cu.id asc;"#;
 
-const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
-    cr#"WITH filtered_fx_rate AS (
+const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr = cr#"WITH filtered_fx_rate AS (
     SELECT cr.currency_id, cr.to_currency_id, cr."date", cr.rate
     FROM plan.fx_rate cr
     JOIN plan.data_date dd ON cr."date" < dd."date"
@@ -73,7 +72,6 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 #[derive(Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
-    // entry_count: i64,
 }
 unsafe impl PGRXSharedMemory for CurrencyControl {}
 
@@ -201,21 +199,15 @@ fn ensure_cache_populated() {
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
-                    let id = row[1].value::<i64>()
-                        .unwrap_or_else(|err| {
-                            error!("server interface error - {err}")
-                        })
-                        .unwrap_or_else(|| {
-                            error!("cannot get currency_id")
-                        });
+                    let id = row[1]
+                        .value::<i64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get currency_id"));
 
-                    let xuid  = row[2].value::<String>()
-                        .unwrap_or_else(|err| {
-                            error!("server interface error - {err}")
-                        })
-                        .unwrap_or_else(|| {
-                            error!("cannot get currency_xuid")
-                        });
+                    let xuid = row[2]
+                        .value::<String>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get currency_xuid"));
 
                     let xuid_str = CurrencyXuid::from(xuid.as_str());
 
@@ -223,11 +215,7 @@ fn ensure_cache_populated() {
 
                     currencies_count += 1;
 
-                    debug1!(
-                        "Currency initialized. ID: {}, xuid: {}",
-                        id,
-                        xuid
-                    )
+                    debug1!("Currency initialized. ID: {}, xuid: {}", id, xuid)
                 }
             }
             Err(spi_error) => {
@@ -236,15 +224,6 @@ fn ensure_cache_populated() {
         }
     });
 
-    // {
-    //     // Update control struct
-    //     let currency_control = CURRENCY_CONTROL.share().clone();
-    //     *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-    //         entry_count: total_entry_count,
-    //         ..currency_control
-    //     };
-    // }
-
     let mut entry_count: i64 = 0;
     Spi::connect(|client| {
         let mut data_map = CURRENCY_DATA_MAP.exclusive();
@@ -252,37 +231,25 @@ fn ensure_cache_populated() {
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
-                    let from_id = row[1].value::<i64>()
-                        .unwrap_or_else(|err| {
-                            error!("server interface error - {err}")
-                        })
-                        .unwrap_or_else(|| {
-                            error!("cannot get from_id")
-                        });
+                    let from_id = row[1]
+                        .value::<i64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get from_id"));
 
-                    let to_id = row[2].value::<i64>()
-                        .unwrap_or_else(|err| {
-                            error!("server interface error - {err}")
-                        })
-                        .unwrap_or_else(|| {
-                            error!("cannot get to_id")
-                        });
+                    let to_id = row[2]
+                        .value::<i64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get to_id"));
 
-                    let date = row[3].value::<PgDate>()
-                        .unwrap_or_else(|err| {
-                            error!("server interface error - {err}")
-                        })
-                        .unwrap_or_else(|| {
-                            error!("cannot get date")
-                        });
+                    let date = row[3]
+                        .value::<PgDate>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get date"));
 
-                    let rate: f64 = row[4].value::<f64>()
-                        .unwrap_or_else(|err| {
-                            error!("server interface error - {err}")
-                        })
-                        .unwrap_or_else(|| {
-                            error!("cannot get rate")
-                        });
+                    let rate: f64 = row[4]
+                        .value::<f64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get rate"));
 
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
                         let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
@@ -324,10 +291,7 @@ fn ensure_cache_populated() {
         }
     }
 
-    *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-        cache_filled: true,
-        // entry_count
-    };
+    *CURRENCY_CONTROL.exclusive() = CurrencyControl { cache_filled: true };
 
     info!("Cache ready, entries: {entry_count}.");
 }
@@ -407,6 +371,7 @@ fn kq_fx_display_cache() -> TableIterator<
 }
 
 #[pg_extern(parallel_safe)]
+#[allow(clippy::comparison_chain)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option<f64> {
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
@@ -414,11 +379,11 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
         .share()
         .get(&(currency_id, to_currency_id))
     {
-                let &(first_date, first_rate) = dates_rates.first().unwrap();
+        let &(first_date, first_rate) = dates_rates.first().unwrap();
         if date < first_date {
             return None;
         } else if date == first_date {
-            return Some(first_rate)
+            return Some(first_rate);
         }
 
         let &(last_date, last_rate) = dates_rates.last().unwrap();
@@ -472,9 +437,13 @@ fn kq_fx_get_rate_xuid(
     kq_fx_get_rate(*from_id, *to_id, date)
 }
 
-
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value(
+    dates: Vec<PgDate>,
+    values: Vec<f64>,
+    date: PgDate,
+    default_value: Option<f64>,
+) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -489,9 +458,11 @@ fn kq_get_arr_value(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_
     let pos = match dates.binary_search(&date) {
         Ok(idx) => idx, // exact match
         Err(idx) => {
-            if idx == 0 { // date precedes first element
+            if idx == 0 {
+                // date precedes first element
                 return default_value;
-            } else { // <= value
+            } else {
+                // <= value
                 idx - 1
             }
         }
@@ -501,7 +472,12 @@ fn kq_get_arr_value(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value2(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value2(
+    dates: Vec<PgDate>,
+    values: Vec<f64>,
+    date: PgDate,
+    default_value: Option<f64>,
+) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -513,9 +489,11 @@ fn kq_get_arr_value2(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default
     let pos = match dates.binary_search(&date) {
         Ok(idx) => idx, // exact match
         Err(idx) => {
-            if idx == 0 { // date precedes first element
+            if idx == 0 {
+                // date precedes first element
                 return default_value;
-            } else { // <= value
+            } else {
+                // <= value
                 idx - 1
             }
         }
@@ -525,7 +503,12 @@ fn kq_get_arr_value2(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value3(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value3(
+    dates: Vec<PgDate>,
+    values: Vec<f64>,
+    date: PgDate,
+    default_value: Option<f64>,
+) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -535,7 +518,7 @@ fn kq_get_arr_value3(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default
     }
 
     if dates.first().unwrap() > &date {
-        return default_value
+        return default_value;
     }
 
     for idx in (0..dates.len()).rev() {
@@ -548,7 +531,12 @@ fn kq_get_arr_value3(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value4(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value4(
+    dates: Vec<PgDate>,
+    values: Vec<f64>,
+    date: PgDate,
+    default_value: Option<f64>,
+) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -556,10 +544,6 @@ fn kq_get_arr_value4(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default
     if dates.len() != values.len() {
         error!("dates and values arrays does not have the same quantity of elements")
     }
-
-    // if dates.first().unwrap() > &date {
-    //     return default_value
-    // }
 
     let dates: Vec<i32> = dates.iter().map(|date| date.to_pg_epoch_days()).collect();
     let date = date.to_pg_epoch_days();
@@ -655,25 +639,45 @@ mod tests {
         let default_value = Some(0.0);
         // intermediate date (within range but not an exact match)
         assert_eq!(
-            crate::kq_get_arr_value(dates.clone(), values.clone(), create_date(2000, 1, 4), default_value),
+            crate::kq_get_arr_value(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 4),
+                default_value
+            ),
             Some(30.0)
         );
 
         // exact date match
         assert_eq!(
-            crate::kq_get_arr_value(dates.clone(), values.clone(), create_date(2000, 1, 8), default_value),
+            crate::kq_get_arr_value(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 8),
+                default_value
+            ),
             Some(80.0)
         );
 
         // date before any value in dates
         assert_eq!(
-            crate::kq_get_arr_value(dates.clone(), values.clone(), create_date(1999, 12, 31), default_value),
+            crate::kq_get_arr_value(
+                dates.clone(),
+                values.clone(),
+                create_date(1999, 12, 31),
+                default_value
+            ),
             default_value
         );
 
         // date after the last value in dates
         assert_eq!(
-            crate::kq_get_arr_value(dates.clone(), values.clone(), create_date(2000, 1, 9), default_value),
+            crate::kq_get_arr_value(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 9),
+                default_value
+            ),
             Some(80.0)
         );
 
@@ -685,7 +689,12 @@ mod tests {
 
         // exact date match to the first value in dates
         assert_eq!(
-            crate::kq_get_arr_value(dates.clone(), values.clone(), create_date(2000, 1, 1), default_value),
+            crate::kq_get_arr_value(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 1),
+                default_value
+            ),
             Some(10.0)
         );
     }
@@ -703,25 +712,45 @@ mod tests {
         let default_value = Some(0.0);
         // intermediate date (within range but not an exact match)
         assert_eq!(
-            crate::kq_get_arr_value2(dates.clone(), values.clone(), create_date(2000, 1, 4), default_value),
+            crate::kq_get_arr_value2(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 4),
+                default_value
+            ),
             Some(30.0)
         );
 
         // exact date match
         assert_eq!(
-            crate::kq_get_arr_value2(dates.clone(), values.clone(), create_date(2000, 1, 8), default_value),
+            crate::kq_get_arr_value2(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 8),
+                default_value
+            ),
             Some(80.0)
         );
 
         // date before any value in dates
         assert_eq!(
-            crate::kq_get_arr_value2(dates.clone(), values.clone(), create_date(1999, 12, 31), default_value),
+            crate::kq_get_arr_value2(
+                dates.clone(),
+                values.clone(),
+                create_date(1999, 12, 31),
+                default_value
+            ),
             default_value
         );
 
         // date after the last value in dates
         assert_eq!(
-            crate::kq_get_arr_value2(dates.clone(), values.clone(), create_date(2000, 1, 9), default_value),
+            crate::kq_get_arr_value2(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 9),
+                default_value
+            ),
             Some(80.0)
         );
 
@@ -733,7 +762,12 @@ mod tests {
 
         // exact date match to the first value in dates
         assert_eq!(
-            crate::kq_get_arr_value2(dates.clone(), values.clone(), create_date(2000, 1, 1), default_value),
+            crate::kq_get_arr_value2(
+                dates.clone(),
+                values.clone(),
+                create_date(2000, 1, 1),
+                default_value
+            ),
             Some(10.0)
         );
     }
