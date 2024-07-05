@@ -8,8 +8,9 @@ use std::ffi::CStr;
 
 // Max allocation params
 
-const MAX_ENTRIES: usize = 8 * 1024;
-const MAX_CURRENCIES: usize = 1024;
+const MAX_ENTRIES: usize = 512;
+const MAX_CURRENCIES: usize = 256;
+const CURRENCY_XUID_MAX_LEN: usize = 128;
 
 // Default Queries
 
@@ -28,9 +29,28 @@ GROUP by cu.id
 ORDER by cu.id asc;"#;
 
 const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr =
-    cr#"SELECT cr.currency_id, cr.to_currency_id, cr."date", cr.rate
-from plan.fx_rate cr
-order by cr.currency_id asc, cr.to_currency_id asc, cr."date" asc;"#;
+    cr#"WITH filtered_fx_rate AS (
+    SELECT cr.currency_id, cr.to_currency_id, cr."date", cr.rate
+    FROM plan.fx_rate cr
+    JOIN plan.data_date dd ON cr."date" < dd."date"
+),
+ranked_rates AS (
+    SELECT
+        currency_id,
+        to_currency_id,
+        "date",
+        rate,
+        ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY "date" DESC) AS rn
+    FROM filtered_fx_rate
+)
+SELECT
+    currency_id,
+    to_currency_id,
+    "date",
+    rate
+FROM ranked_rates
+WHERE rn <= 128
+ORDER BY currency_id DESC, to_currency_id DESC, "date" DESC;"#;
 
 // Query GUCs
 
@@ -53,14 +73,16 @@ static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 #[derive(Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
-    entry_count: i64,
+    // entry_count: i64,
 }
 unsafe impl PGRXSharedMemory for CurrencyControl {}
 
-type ExtDate = pgrx::Date;
+type PgDate = pgrx::Date;
 type StoreDate = i32;
 type FromToIdPair = (i64, i64);
 type StoreDateRatePair = (StoreDate, f64);
+
+type CurrencyXuid = heapless::String<CURRENCY_XUID_MAX_LEN>;
 
 type CurrencyDataMap = PgLwLock<
     heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
@@ -70,7 +92,7 @@ type CurrencyDataMap = PgLwLock<
 
 static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
 /// CURRENCY_ID => CURRENCY_XUID
-static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<&'static str, i64, MAX_CURRENCIES>> =
+static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<CurrencyXuid, i64, MAX_CURRENCIES>> =
     PgLwLock::new();
 /// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
 static CURRENCY_DATA_MAP: CurrencyDataMap = PgLwLock::new();
@@ -173,27 +195,38 @@ fn ensure_cache_populated() {
     debug2!("Currencies: {}", currency_count);
     // Load Currencies (id, xuid and entry count)
     let mut currencies_count: i64 = 0;
-    let mut total_entry_count: i64 = 0;
     Spi::connect(|client| {
         let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
         let select = client.select(&get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
-                    let id: i64 = row[1].value().unwrap().unwrap();
-                    let xuid: &str = row[2].value().unwrap().unwrap();
-                    let entry_count: i64 = row[3].value().unwrap().unwrap();
+                    let id = row[1].value::<i64>()
+                        .unwrap_or_else(|err| {
+                            error!("server interface error - {err}")
+                        })
+                        .unwrap_or_else(|| {
+                            error!("cannot get currency_id")
+                        });
 
-                    xuid_map.insert(xuid, id).unwrap();
+                    let xuid  = row[2].value::<String>()
+                        .unwrap_or_else(|err| {
+                            error!("server interface error - {err}")
+                        })
+                        .unwrap_or_else(|| {
+                            error!("cannot get currency_xuid")
+                        });
 
-                    total_entry_count += entry_count;
+                    let xuid_str = CurrencyXuid::from(xuid.as_str());
+
+                    xuid_map.insert(xuid_str, id).unwrap();
+
                     currencies_count += 1;
 
                     debug1!(
-                        "Currency initialized. ID: {}, xuid: {}, entries: {}",
+                        "Currency initialized. ID: {}, xuid: {}",
                         id,
-                        xuid,
-                        entry_count
+                        xuid
                     )
                 }
             }
@@ -203,42 +236,72 @@ fn ensure_cache_populated() {
         }
     });
 
-    {
-        // Update control struct
-        let currency_control = CURRENCY_CONTROL.share().clone();
-        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-            entry_count: total_entry_count,
-            ..currency_control
-        };
-    }
+    // {
+    //     // Update control struct
+    //     let currency_control = CURRENCY_CONTROL.share().clone();
+    //     *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+    //         entry_count: total_entry_count,
+    //         ..currency_control
+    //     };
+    // }
 
     let mut entry_count: i64 = 0;
-
     Spi::connect(|client| {
         let mut data_map = CURRENCY_DATA_MAP.exclusive();
         let select = client.select(&crate::get_guc_string(&Q4_GET_CURRENCY_ENTRIES), None, None);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
-                    let from_id: i64 = row[1].value().unwrap().unwrap();
-                    let to_id: i64 = row[2].value().unwrap().unwrap();
-                    let date: pgrx::Date = row[3].value().unwrap().unwrap();
-                    let rate: f64 = row[4].value().unwrap().unwrap();
-                    debug2!("From_ID: {from_id}, To_ID: {to_id}, DateADT: {date}, Rate: {rate}");
+                    let from_id = row[1].value::<i64>()
+                        .unwrap_or_else(|err| {
+                            error!("server interface error - {err}")
+                        })
+                        .unwrap_or_else(|| {
+                            error!("cannot get from_id")
+                        });
+
+                    let to_id = row[2].value::<i64>()
+                        .unwrap_or_else(|err| {
+                            error!("server interface error - {err}")
+                        })
+                        .unwrap_or_else(|| {
+                            error!("cannot get to_id")
+                        });
+
+                    let date = row[3].value::<PgDate>()
+                        .unwrap_or_else(|err| {
+                            error!("server interface error - {err}")
+                        })
+                        .unwrap_or_else(|| {
+                            error!("cannot get date")
+                        });
+
+                    let rate: f64 = row[4].value::<f64>()
+                        .unwrap_or_else(|err| {
+                            error!("server interface error - {err}")
+                        })
+                        .unwrap_or_else(|| {
+                            error!("cannot get rate")
+                        });
+
                     if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                        let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
                             heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-                        new_data_vec
-                            .push((date.to_pg_epoch_days(), rate))
-                            .expect("cannot insert more elements into date,rate vector");
                         v.insert(new_data_vec).unwrap();
-                    } else if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
+                        debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                    }
+
+                    if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
                         let data_vec = o.get_mut();
                         data_vec
                             .push((date.to_pg_epoch_days(), rate))
-                            .expect("cannot insert more elements into date,rate vector");
+                            .expect("cannot insert more elements into (date, rate) vector");
+                    } else {
+                        error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
                     }
+
                     entry_count += 1;
+
                     debug2!(
                         "Inserted into shared cache: ({},{}) => ({}, {})",
                         from_id,
@@ -254,21 +317,19 @@ fn ensure_cache_populated() {
         }
     });
 
-    let currency_control = CURRENCY_CONTROL.share().clone();
-
-    if total_entry_count == entry_count {
-        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-            cache_filled: true,
-            ..currency_control
-        };
-
-        info!("Cache ready, entries: {entry_count}.");
-    } else {
-        error!(
-            "Loaded entries does not match entry count. Entry Count: {}, Entries Cached: {}",
-            currency_control.entry_count, entry_count
-        )
+    {
+        // Binary search will not work with DESC ordered items
+        for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().iter_mut() {
+            data_vec.sort_by_key(|d| d.0)
+        }
     }
+
+    *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+        cache_filled: true,
+        // entry_count
+    };
+
+    info!("Cache ready, entries: {entry_count}.");
 }
 
 fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
@@ -340,7 +401,7 @@ fn kq_fx_display_cache() -> TableIterator<
     (
         name!(currency_id, i64),
         name!(to_currency_id, i64),
-        name!(date, ExtDate),
+        name!(date, PgDate),
         name!(rate, f64),
     ),
 > {
@@ -359,40 +420,73 @@ fn kq_fx_display_cache() -> TableIterator<
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Option<f64> {
+fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option<f64> {
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP
         .share()
         .get(&(currency_id, to_currency_id))
     {
+        // info!("dates size for {currency_id}, {to_currency_id}: {}", dates_rates.len());
+
+        // let mut cc = 0;
+        // dates_rates.iter().for_each(|&(cache_date, _)| {
+        //     unsafe {
+        //         info!("{cc}: {currency_id}, {to_currency_id}: {}", PgDate::from_pg_epoch_days(cache_date));
+        //     }
+        //     cc += 1;
+        // });
+
         let &(first_date, first_rate) = dates_rates.first().unwrap();
         if date < first_date {
+            // unsafe {
+            //     info!("date is prior to first_date: {}, {}", PgDate::from_pg_epoch_days(date), PgDate::from_pg_epoch_days(first_date));
+            // }
             return None;
         } else if date == first_date {
-            return Some(first_rate);
+            // unsafe {
+            //     info!("date equals first_date {} => {first_date}", PgDate::from_pg_epoch_days(first_date));
+            // }
+            return Some(first_rate)
         }
+
         let &(last_date, last_rate) = dates_rates.last().unwrap();
         if date >= last_date {
+            // unsafe {
+            //     info!("date equals or is greater than last_date {} => {last_rate}", PgDate::from_pg_epoch_days(last_date));
+            // }
             return Some(last_rate);
         }
+
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
             Ok(index) => {
-                // debug1!("Found rate exactly with date: {}", date);
-                Some(dates_rates[index].1)
+                let rate = dates_rates[index].1;
+                // unsafe {
+                //     info!("Found rate exactly with date: {}, rate: {rate}", PgDate::from_pg_epoch_days(date));
+                // }
+                Some(rate)
             }
             Err(index) => {
                 if index > 0 {
-                    // debug1!("Found previous rate with date: {}", date);
-                    Some(dates_rates[index - 1].1)
+                    let index = index - 1;
+                    let rate = dates_rates[index].1;
+                    // unsafe {
+                    //     let found_date = dates_rates[index].0;
+                    //     let found_date = PgDate::from_pg_epoch_days(found_date);
+                    //     info!("Found previous rate with date: {}, found: {found_date} => {rate}, idx: {index}", PgDate::from_pg_epoch_days(date));
+                    // }
+                    Some(rate)
                 } else {
+                    // unsafe {
+                    //     info!("Not found date: {}", PgDate::from_pg_epoch_days(date));
+                    // }
                     None
                 }
             }
         }
     } else {
-        // debug1!("There are no rates for this currency pair: from_id: {}, to_id: {}.", currency_id, to_currency_id);
+        // info!("There are no rates for this currency pair: from_id: {}, to_id: {}.", currency_id, to_currency_id);
         None
     }
 }
@@ -401,19 +495,19 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: ExtDate) -> Optio
 fn kq_fx_get_rate_xuid(
     currency_xuid: &'static str,
     to_currency_xuid: &'static str,
-    date: ExtDate,
+    date: PgDate,
 ) -> Option<f64> {
+    let currency_xuid = CurrencyXuid::from(currency_xuid.to_lowercase().as_str());
+    let to_currency_xuid = CurrencyXuid::from(to_currency_xuid.to_lowercase().as_str());
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
-    let currency_xuid = currency_xuid.to_lowercase();
-    let currency_xuid: &str = &currency_xuid;
-    let from_id = match xuid_map.get(currency_xuid) {
+    let from_id = match xuid_map.get(&currency_xuid) {
         None => {
             error!("From currency xuid not found. {currency_xuid}")
         }
         Some(currency_id) => currency_id,
     };
-    let to_id = match xuid_map.get(to_currency_xuid) {
+    let to_id = match xuid_map.get(&to_currency_xuid) {
         None => {
             error!("Target currency xuid not found. {to_currency_xuid}")
         }
@@ -424,7 +518,7 @@ fn kq_fx_get_rate_xuid(
 
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -451,7 +545,7 @@ fn kq_get_arr_value(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defaul
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value2(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value2(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -475,7 +569,7 @@ fn kq_get_arr_value2(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defau
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value3(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value3(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -498,7 +592,7 @@ fn kq_get_arr_value3(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, defau
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value4(dates: Vec<ExtDate>, values: Vec<f64>, date: ExtDate, default_value: Option<f64>) -> Option<f64> {
+fn kq_get_arr_value4(dates: Vec<PgDate>, values: Vec<f64>, date: PgDate, default_value: Option<f64>) -> Option<f64> {
     if dates.is_empty() || values.is_empty() {
         return default_value;
     }
@@ -541,11 +635,11 @@ mod tests {
     #[pg_test]
     fn test_get_rate_by_id() {
         assert_eq!(
-            Some(0.6583555372901019f64),
-            crate::kq_fx_get_rate(1, 2, pgrx::Date::new(2010, 2, 1).unwrap())
+            Some(0.6782540169620296f64),
+            crate::kq_fx_get_rate(1, 2, pgrx::Date::new(2015, 5, 1).unwrap())
         );
         assert_eq!(
-            Some(1.6285458614035657f64),
+            Some(1.4450710028764924f64),
             crate::kq_fx_get_rate(
                 3590000203070,
                 3590000231158,
@@ -557,11 +651,13 @@ mod tests {
     #[pg_test]
     fn test_get_rate_by_xuid() {
         assert_eq!(
-            Some(0.6583555372901019f64),
-            crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2010, 2, 1).unwrap())
+            Some(0.7335380076416401f64),
+            // 1 -> 2
+            crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2014, 2, 1).unwrap())
         );
         assert_eq!(
-            Some(1.6285458614035657f64),
+            Some(1.4450710028764924f64),
+            // 3590000203070 -> 3590000231158
             crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
         );
     }
@@ -695,6 +791,11 @@ pub mod pg_test {
         // perform one-off initialization when the pg_test framework starts
     }
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec!["shared_preload_libraries = 'kq_fx'"]
+        vec![
+            "shared_preload_libraries = 'kq_fx'",
+            "log_min_messages = debug2",
+            "log_min_error_statement = debug2",
+            "client_min_messages = debug2",
+        ]
     }
 }
