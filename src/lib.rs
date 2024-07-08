@@ -5,12 +5,14 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::CStr;
+use std::time::Duration;
 
-// Max allocation params
+// Capacity params
+// IMPORTANT: All capacity values MUST be a power of 2. E.g. 2^8 = 256, 2^9 = 512, 2^10 = 1024
 
-const MAX_ENTRIES: usize = 512;
+const MAX_ENTRIES: usize = 1024;
 const MAX_CURRENCIES: usize = 256;
-const CURRENCY_XUID_MAX_LEN: usize = 128;
+const CURRENCY_XUID_MAX_LEN: usize = 64;
 
 // Default Queries
 
@@ -18,89 +20,88 @@ const DEFAULT_Q1_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
 FROM information_schema.tables
 WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
 
-const DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY: &CStr =
-    cr#"SELECT min(c.id), max(c.id) FROM plan.currency c"#;
-
-const DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT: &CStr = cr#"SELECT cu.id,
-LOWER(cu.xuid),
-(SELECT count(*) rate_count FROM plan.fx_rate fr WHERE fr.currency_id = cu.id)
+const DEFAULT_Q2_GET_CURRENCIES_XUID_INIT: &CStr = cr#"SELECT cu.id, LOWER(cu.xuid)
 FROM plan.currency cu
-GROUP by cu.id
 ORDER by cu.id asc;"#;
 
-const DEFAULT_Q4_GET_CURRENCY_ENTRIES: &CStr = cr#"WITH filtered_fx_rate AS (
-    SELECT cr.currency_id, cr.to_currency_id, cr."date", cr.rate
-    FROM plan.fx_rate cr
-    JOIN plan.data_date dd ON cr."date" < dd."date"
-),
-ranked_rates AS (
-    SELECT
-        currency_id,
-        to_currency_id,
-        "date",
-        rate,
-        ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY "date" DESC) AS rn
-    FROM filtered_fx_rate
-)
-SELECT
-    currency_id,
-    to_currency_id,
-    "date",
-    rate
-FROM ranked_rates
-WHERE rn <= 128
-ORDER BY currency_id DESC, to_currency_id DESC, "date" DESC;"#;
+const DEFAULT_Q3_GET_CURRENCY_ENTRIES: &CStr = cr#"WITH
+	dd AS (
+		SELECT date FROM plan.data_date dd
+	),
+	fx_rate_hist AS (
+    	SELECT
+    		cr.currency_id,
+    		cr.to_currency_id,
+    		cr."date",
+    		cr.rate,
+    		ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY cr."date" DESC) AS rn
+    	FROM
+    		plan.fx_rate cr
+    		INNER JOIN dd ON cr.date < dd."date"
+	),
+	fx_rate AS (
+    	SELECT
+    		cr.currency_id,
+    		cr.to_currency_id,
+    		cr."date",
+    		cr.rate,
+    		ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY cr."date" ASC) AS rn
+    	FROM
+    		plan.fx_rate cr
+    		INNER JOIN dd ON cr.date >= dd."date"
+	)
+SELECT currency_id, to_currency_id, date, rate FROM fx_rate_hist WHERE rn <= 312 -- 5 years weekly
+UNION ALL
+SELECT currency_id, to_currency_id, date, rate FROM fx_rate WHERE rn <= 312	--5 years weekly
+ORDER BY 1, 2, 3;"#;
 
 // Query GUCs
 
 static Q1_VALIDATION_QUERY: GucSetting<Option<&'static CStr>> =
     GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q1_VALIDATION_QUERY));
 
-static Q2_GET_CURRENCIES_IDS: GucSetting<Option<&'static CStr>> =
-    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q2_GET_CURRENCIES_IDS_QUERY));
+static Q2_GET_CURRENCIES_XUID_INIT: GucSetting<Option<&'static CStr>> =
+    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q2_GET_CURRENCIES_XUID_INIT));
 
-static Q3_GET_CURRENCIES_ENTRY_COUNT: GucSetting<Option<&'static CStr>> =
-    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q3_GET_CURRENCIES_ENTRY_COUNT));
-
-static Q4_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
-    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q4_GET_CURRENCY_ENTRIES));
+static Q3_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
+    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q3_GET_CURRENCY_ENTRIES));
 
 // Activate PostgreSQL Extension
 ::pgrx::pg_module_magic!();
 
 // Control Struct
+
 #[derive(Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
+    cache_being_filled: bool,
 }
+
 unsafe impl PGRXSharedMemory for CurrencyControl {}
+
+// Types
 
 type PgDate = pgrx::Date;
 type StoreDate = i32;
 type FromToIdPair = (i64, i64);
 type StoreDateRatePair = (StoreDate, f64);
-
 type CurrencyXuid = heapless::String<CURRENCY_XUID_MAX_LEN>;
+type CurrencyDataMap =
+    heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>;
+type CurrencyXuidMap = heapless::FnvIndexMap<CurrencyXuid, i64, MAX_CURRENCIES>;
 
-type CurrencyDataMap = PgLwLock<
-    heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>,
->;
-
-// Shared Memory Hashmaps
+// Shared Memory Structs
 
 static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
 /// CURRENCY_ID => CURRENCY_XUID
-static CURRENCY_XUID_MAP: PgLwLock<heapless::FnvIndexMap<CurrencyXuid, i64, MAX_CURRENCIES>> =
-    PgLwLock::new();
+static CURRENCY_XUID_MAP: PgLwLock<CurrencyXuidMap> = PgLwLock::new();
 /// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
-static CURRENCY_DATA_MAP: CurrencyDataMap = PgLwLock::new();
+static CURRENCY_DATA_MAP: PgLwLock<CurrencyDataMap> = PgLwLock::new();
 
-// Init Extension - Shared Memory
+// Init Extension
+
 #[pg_guard]
 pub extern "C" fn _PG_init() {
-    // if !check_process_shared_preload_libraries_in_progress() {
-    //     error!("ketteQ FX Currency Cache Extension needs to be loaded in the preload_shared_libraries section of postgres.conf")
-    // }
     pg_shmem_init!(CURRENCY_CONTROL);
     pg_shmem_init!(CURRENCY_XUID_MAP);
     pg_shmem_init!(CURRENCY_DATA_MAP);
@@ -125,26 +126,18 @@ unsafe fn init_gucs() {
         GucFlags::empty()
     );
     GucRegistry::define_string_guc(
-        "kq.currency.q2_get_currencies_ids",
-        "Query to get all the currencies IDs.",
+        "kq.currency.q2_get_currencies_xuid",
+        "Query to get the currencies IDs and XUIDs.",
         "",
-        &Q2_GET_CURRENCIES_IDS,
+        &Q2_GET_CURRENCIES_XUID_INIT,
         GucContext::Suset,
         GucFlags::empty(),
     );
     GucRegistry::define_string_guc(
-        "kq.currency.q3_get_currencies_entry_count",
-        "Query to get the currencies entry count.",
-        "",
-        &Q3_GET_CURRENCIES_ENTRY_COUNT,
-        GucContext::Suset,
-        GucFlags::empty(),
-    );
-    GucRegistry::define_string_guc(
-        "kq.currency.q4_get_currency_entries",
+        "kq.currency.q3_get_currency_entries",
         "Query to actually get the currencies and store it in the shared memory cache.",
         "",
-        &Q4_GET_CURRENCY_ENTRIES,
+        &Q3_GET_CURRENCY_ENTRIES,
         GucContext::Suset,
         GucFlags::empty(),
     );
@@ -154,48 +147,36 @@ unsafe fn init_gucs() {
 
 fn ensure_cache_populated() {
     debug3!("ensure_cache_populated()");
-    let control = CURRENCY_CONTROL.share().clone();
-    if control.cache_filled {
-        debug2!("Cache already filled. Skipping loading from DB.");
+    if CURRENCY_CONTROL.share().cache_filled {
         return;
     }
-    validate_compatible_db();
-    // Currency Min and Max ID
-    let currency_min_max: SpiResult<(Option<i64>, Option<i64>)> =
-        Spi::get_two(&get_guc_string(&Q2_GET_CURRENCIES_IDS));
-    let (min_id, max_id): (i64, i64) = match currency_min_max {
-        Ok(values) => {
-            let min_val = match values.0 {
-                None => {
-                    error!("Cannot get currency min value or currency table is empty")
-                }
-                Some(min_val) => min_val,
-            };
-            let max_val = match values.1 {
-                None => {
-                    error!("Cannot get currency min value or currency table is empty")
-                }
-                Some(max_val) => max_val,
-            };
-            (min_val, max_val)
+    if CURRENCY_CONTROL.share().cache_being_filled {
+        while CURRENCY_CONTROL.share().cache_being_filled {
+            std::thread::sleep(Duration::from_millis(10));
         }
-        Err(spi_error) => {
-            error!(
-                "Cannot execute min/max ID values query or there is no currencies in the table. {}",
-                spi_error
-            )
-        }
-    };
-    if min_id > max_id {
-        error!("Min currency ID cannot be greater that max currency ID. Cannot init cache.")
+        return;
     }
-    let currency_count = max_id - min_id + 1;
-    debug2!("Currencies: {}", currency_count);
-    // Load Currencies (id, xuid and entry count)
+    {
+        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+            cache_filled: false,
+            cache_being_filled: true,
+        };
+    }
+    if let Err(msg) = validate_compatible_db() {
+        {
+            *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+                cache_filled: false,
+                cache_being_filled: false,
+            };
+        }
+        error!("{}", msg);
+    }
+    // Init Currencies (id and xuid)
+    let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
+    let mut data_map = CURRENCY_DATA_MAP.exclusive();
     let mut currencies_count: i64 = 0;
     Spi::connect(|client| {
-        let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
-        let select = client.select(&get_guc_string(&Q3_GET_CURRENCIES_ENTRY_COUNT), None, None);
+        let select = client.select(&get_guc_string(&Q2_GET_CURRENCIES_XUID_INIT), None, None);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
@@ -223,11 +204,9 @@ fn ensure_cache_populated() {
             }
         }
     });
-
     let mut entry_count: i64 = 0;
     Spi::connect(|client| {
-        let mut data_map = CURRENCY_DATA_MAP.exclusive();
-        let select = client.select(&crate::get_guc_string(&Q4_GET_CURRENCY_ENTRIES), None, None);
+        let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, None);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
@@ -262,7 +241,7 @@ fn ensure_cache_populated() {
                         let data_vec = o.get_mut();
                         data_vec
                             .push((date.to_pg_epoch_days(), rate))
-                            .expect("cannot insert more elements into (date, rate) vector");
+                            .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
                     } else {
                         error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
                     }
@@ -284,14 +263,17 @@ fn ensure_cache_populated() {
         }
     });
 
-    {
-        // Binary search will not work with DESC ordered items
-        for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().iter_mut() {
-            data_vec.sort_by_key(|d| d.0)
-        }
+    // Ensure items are ordered ASC. Rq. for Binary Search.
+    for (_, data_vec) in data_map.iter_mut() {
+        data_vec.sort_by_key(|d| d.0)
     }
 
-    *CURRENCY_CONTROL.exclusive() = CurrencyControl { cache_filled: true };
+    {
+        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+            cache_filled: true,
+            cache_being_filled: false,
+        };
+    }
 
     info!("Cache ready, entries: {entry_count}.");
 }
@@ -305,23 +287,23 @@ fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
 }
 
 /// This method prevents using the extension in incompatible databases.
-fn validate_compatible_db() -> &'static str {
+fn validate_compatible_db() -> Result<(), String> {
     let spi_result: SpiResult<Option<bool>> = Spi::get_one(&get_guc_string(&Q1_VALIDATION_QUERY));
     match spi_result {
         Ok(found_tables_opt) => match found_tables_opt {
             None => {
-                error!("The current database is not compatible with the KetteQ FX Currency Cache extension.")
+                Err("The current database is not compatible with the KetteQ FX Currency Cache extension.".to_string())
             }
             Some(valid) => {
                 if !valid {
-                    error!("The current database is not compatible with the KetteQ FX Currency Cache extension.")
+                    Err("The current database is not compatible with the KetteQ FX Currency Cache extension.".to_string())
                 } else {
-                    "Database is compatible with the extension."
+                    Ok(())
                 }
             }
         },
         Err(spi_error) => {
-            error!("Cannot validate current database. {}", spi_error)
+            Err(format!("Cannot validate current database. {}", spi_error))
         }
     }
 }
@@ -329,24 +311,32 @@ fn validate_compatible_db() -> &'static str {
 // Exported Functions
 
 #[pg_extern]
-fn kq_fx_check_db() -> &'static str {
-    validate_compatible_db()
+fn kq_fx_check_db() -> String {
+    match validate_compatible_db() {
+        Ok(_) => "Database is compatible with the extension.".to_string(),
+        Err(error_msg) => error_msg,
+    }
 }
 
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
     debug2!("Waiting for lock...");
-    CURRENCY_XUID_MAP.exclusive().clear();
+    *CURRENCY_XUID_MAP.exclusive() = CurrencyXuidMap::new();
     debug2!("CURRENCY_XUID_MAP cleared");
+    for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().iter_mut() {
+        data_vec.clear();
+    }
     CURRENCY_DATA_MAP.exclusive().clear();
     debug2!("CURRENCY_DATA_MAP cleared");
-    *CURRENCY_CONTROL.exclusive() = CurrencyControl::default();
+    *CURRENCY_CONTROL.exclusive() = CurrencyControl {
+        cache_being_filled: false,
+        ..CurrencyControl::default()
+    };
     debug2!("CURRENCY_CONTROL reset");
-    debug1!("Cache invalidated");
     "Cache invalidated."
 }
 
-#[pg_extern]
+#[pg_extern(parallel_safe)]
 fn kq_fx_display_cache() -> TableIterator<
     'static,
     (
@@ -379,35 +369,86 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
         .share()
         .get(&(currency_id, to_currency_id))
     {
+        // info!(
+        //     "dates size for {currency_id}, {to_currency_id}: {}",
+        //     dates_rates.len()
+        // );
+        //
+        // let mut cc = 0;
+        // dates_rates.iter().for_each(|&(cache_date, _)| {
+        //     unsafe {
+        //         info!(
+        //             "{cc}: {currency_id}, {to_currency_id}: {}",
+        //             PgDate::from_pg_epoch_days(cache_date)
+        //         );
+        //     }
+        //     cc += 1;
+        // });
+
         let &(first_date, first_rate) = dates_rates.first().unwrap();
         if date < first_date {
+            // unsafe {
+            //     info!(
+            //         "date is prior to first_date: {}, {}",
+            //         PgDate::from_pg_epoch_days(date),
+            //         PgDate::from_pg_epoch_days(first_date)
+            //     );
+            // }
             return None;
         } else if date == first_date {
+            // unsafe {
+            //     info!(
+            //         "date equals first_date {} => {first_date}",
+            //         PgDate::from_pg_epoch_days(first_date)
+            //     );
+            // }
             return Some(first_rate);
         }
-
         let &(last_date, last_rate) = dates_rates.last().unwrap();
         if date >= last_date {
+            // unsafe {
+            //     info!(
+            //         "date equals or is greater than last_date {} => {last_rate}",
+            //         PgDate::from_pg_epoch_days(last_date)
+            //     );
+            // }
             return Some(last_rate);
         }
-
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
             Ok(index) => {
                 let rate = dates_rates[index].1;
+                // unsafe {
+                //     info!(
+                //         "Found rate exactly with date: {}, rate: {rate}",
+                //         PgDate::from_pg_epoch_days(date)
+                //     );
+                // }
                 Some(rate)
             }
             Err(index) => {
                 if index > 0 {
                     let index = index - 1;
                     let rate = dates_rates[index].1;
+                    // unsafe {
+                    //     let found_date = dates_rates[index].0;
+                    //     let found_date = PgDate::from_pg_epoch_days(found_date);
+                    //     info!("Found previous rate with date: {}, found: {found_date} => {rate}, idx: {index}", PgDate::from_pg_epoch_days(date));
+                    // }
                     Some(rate)
                 } else {
+                    // unsafe {
+                    //     info!("Not found date: {}", PgDate::from_pg_epoch_days(date));
+                    // }
                     None
                 }
             }
         }
     } else {
+        // info!(
+        //     "There are no rates for this currency pair: from_id: {}, to_id: {}.",
+        //     currency_id, to_currency_id
+        // );
         None
     }
 }
@@ -424,13 +465,13 @@ fn kq_fx_get_rate_xuid(
     let xuid_map = CURRENCY_XUID_MAP.share();
     let from_id = match xuid_map.get(&currency_xuid) {
         None => {
-            error!("From currency xuid not found. {currency_xuid}")
+            error!("From currency xuid not found: {currency_xuid}")
         }
         Some(currency_id) => currency_id,
     };
     let to_id = match xuid_map.get(&to_currency_xuid) {
         None => {
-            error!("Target currency xuid not found. {to_currency_xuid}")
+            error!("Target currency xuid not found: {to_currency_xuid}")
         }
         Some(currency_id) => currency_id,
     };
@@ -566,6 +607,7 @@ mod tests {
 
     #[pg_test]
     fn test_validate_db() {
+        crate::kq_fx_invalidate_cache();
         assert_eq!(
             "Database is compatible with the extension.",
             crate::kq_fx_check_db()
