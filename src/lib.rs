@@ -363,6 +363,9 @@ fn kq_fx_display_cache() -> TableIterator<
 #[pg_extern(parallel_safe)]
 #[allow(clippy::comparison_chain)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option<f64> {
+    if currency_id == to_currency_id {
+        return Some(1.0)
+    }
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP
@@ -613,6 +616,15 @@ mod tests {
             crate::kq_fx_check_db()
         );
     }
+
+    #[pg_test]
+    fn test_get_rate_same_id() {
+        assert_eq!(
+            Some(1.0),
+            crate::kq_fx_get_rate(1, 1, pgrx::Date::new(2015, 5, 1).unwrap())
+        );
+    }
+
 
     #[pg_test]
     fn test_get_rate_by_id() {
