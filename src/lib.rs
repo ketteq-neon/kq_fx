@@ -50,9 +50,9 @@ const DEFAULT_Q3_GET_CURRENCY_ENTRIES: &CStr = cr#"WITH
     		plan.fx_rate cr
     		INNER JOIN dd ON cr.date >= dd."date"
 	)
-SELECT currency_id, to_currency_id, date, rate FROM fx_rate_hist WHERE rn <= 312 -- 5 years weekly
+SELECT currency_id, to_currency_id, date, rate FROM fx_rate_hist WHERE rn <= 312
 UNION ALL
-SELECT currency_id, to_currency_id, date, rate FROM fx_rate WHERE rn <= 312	--5 years weekly
+SELECT currency_id, to_currency_id, date, rate FROM fx_rate WHERE rn <= 312
 ORDER BY 1, 2, 3;"#;
 
 // Query GUCs
@@ -206,133 +206,133 @@ fn ensure_cache_populated() {
     });
     let mut entry_count: i64 = 0;
 
-    Spi::connect(|client| {
-        let mut cursor = client.open_cursor(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None);
-        let result_data = cursor.fetch(10000).unwrap_or_else(|spi_error| {
-            error!("Cannot load currency rates. {}", spi_error)
-        });
-        result_data.into_iter().for_each(|row| {
-            let from_id = row[1]
-                .value::<i64>()
-                .unwrap_or_else(|err| error!("server interface error - {err}"))
-                .unwrap_or_else(|| error!("cannot get from_id"));
-
-            let to_id = row[2]
-                .value::<i64>()
-                .unwrap_or_else(|err| error!("server interface error - {err}"))
-                .unwrap_or_else(|| error!("cannot get to_id"));
-
-            let date = row[3]
-                .value::<PgDate>()
-                .unwrap_or_else(|err| error!("server interface error - {err}"))
-                .unwrap_or_else(|| error!("cannot get date"));
-
-            let rate: f64 = row[4]
-                .value::<f64>()
-                .unwrap_or_else(|err| error!("server interface error - {err}"))
-                .unwrap_or_else(|| error!("cannot get rate"));
-
-            match data_map.entry((from_id, to_id)) {
-                Entry::Vacant(v) => {
-                    let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-                        heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-                    new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
-                    v.insert(new_data_vec).unwrap();
-                    debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-                }
-                Entry::Occupied(mut o) => {
-                    let data_vec = o.get_mut();
-                    data_vec
-                        .push((date.to_pg_epoch_days(), rate))
-                        .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-                }
-            }
-
-            entry_count += 1;
-
-            debug2!(
-                        "Inserted into shared cache: ({},{}) => ({}, {})",
-                        from_id,
-                        to_id,
-                        date,
-                        rate
-            );
-        })
-    });
-
     // Spi::connect(|client| {
-    //     let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, None);
-    //     match select {
-    //         Ok(tuple_table) => {
-    //             for row in tuple_table {
-    //                 let from_id = row[1]
-    //                     .value::<i64>()
-    //                     .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //                     .unwrap_or_else(|| error!("cannot get from_id"));
+    //     let mut cursor = client.open_cursor(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None);
+    //     let result_data = cursor.fetch(10000).unwrap_or_else(|spi_error| {
+    //         error!("Cannot load currency rates. {}", spi_error)
+    //     });
+    //     result_data.into_iter().for_each(|row| {
+    //         let from_id = row[1]
+    //             .value::<i64>()
+    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
+    //             .unwrap_or_else(|| error!("cannot get from_id"));
     //
-    //                 let to_id = row[2]
-    //                     .value::<i64>()
-    //                     .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //                     .unwrap_or_else(|| error!("cannot get to_id"));
+    //         let to_id = row[2]
+    //             .value::<i64>()
+    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
+    //             .unwrap_or_else(|| error!("cannot get to_id"));
     //
-    //                 let date = row[3]
-    //                     .value::<PgDate>()
-    //                     .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //                     .unwrap_or_else(|| error!("cannot get date"));
+    //         let date = row[3]
+    //             .value::<PgDate>()
+    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
+    //             .unwrap_or_else(|| error!("cannot get date"));
     //
-    //                 let rate: f64 = row[4]
-    //                     .value::<f64>()
-    //                     .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //                     .unwrap_or_else(|| error!("cannot get rate"));
+    //         let rate: f64 = row[4]
+    //             .value::<f64>()
+    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
+    //             .unwrap_or_else(|| error!("cannot get rate"));
     //
-    //                 match data_map.entry((from_id, to_id)) {
-    //                     Entry::Vacant(v) => {
-    //                         let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-    //                             heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-    //                         new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
-    //                         v.insert(new_data_vec).unwrap();
-    //                         debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-    //                     }
-    //                     Entry::Occupied(mut o) => {
-    //                         let data_vec = o.get_mut();
-    //                         data_vec
-    //                             .push((date.to_pg_epoch_days(), rate))
-    //                             .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-    //                     }
-    //                 }
+    //         match data_map.entry((from_id, to_id)) {
+    //             Entry::Vacant(v) => {
+    //                 let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+    //                     heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+    //                 new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
+    //                 v.insert(new_data_vec).unwrap();
+    //                 debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+    //             }
+    //             Entry::Occupied(mut o) => {
+    //                 let data_vec = o.get_mut();
+    //                 data_vec
+    //                     .push((date.to_pg_epoch_days(), rate))
+    //                     .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+    //             }
+    //         }
     //
-    //                 // if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-    //                 //     let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-    //                 //         heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-    //                 //     v.insert(new_data_vec).unwrap();
-    //                 //     debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-    //                 // }
-    //                 //
-    //                 // if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
-    //                 //     let data_vec = o.get_mut();
-    //                 //     data_vec
-    //                 //         .push((date.to_pg_epoch_days(), rate))
-    //                 //         .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-    //                 // } else {
-    //                 //     error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
-    //                 // }
+    //         entry_count += 1;
     //
-    //                 entry_count += 1;
-    //
-    //                 debug2!(
+    //         debug2!(
     //                     "Inserted into shared cache: ({},{}) => ({}, {})",
     //                     from_id,
     //                     to_id,
     //                     date,
     //                     rate
-    //                 );
-    //             }
-    //         }
-    //         Err(spi_error) => {
-    //             error!("Cannot load currency rates. {}", spi_error)
-    //         }
-    //     }
+    //         );
+    //     })
     // });
+
+    Spi::connect(|client| {
+        let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, None);
+        match select {
+            Ok(tuple_table) => {
+                for row in tuple_table {
+                    let from_id = row[1]
+                        .value::<i64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get from_id"));
+
+                    let to_id = row[2]
+                        .value::<i64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get to_id"));
+
+                    let date = row[3]
+                        .value::<PgDate>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get date"));
+
+                    let rate: f64 = row[4]
+                        .value::<f64>()
+                        .unwrap_or_else(|err| error!("server interface error - {err}"))
+                        .unwrap_or_else(|| error!("cannot get rate"));
+
+                    // match data_map.entry((from_id, to_id)) {
+                    //     Entry::Vacant(v) => {
+                    //         let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                    //             heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+                    //         new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
+                    //         v.insert(new_data_vec).unwrap();
+                    //         debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                    //     }
+                    //     Entry::Occupied(mut o) => {
+                    //         let data_vec = o.get_mut();
+                    //         data_vec
+                    //             .push((date.to_pg_epoch_days(), rate))
+                    //             .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+                    //     }
+                    // }
+
+                    if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
+                        let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                            heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+                        v.insert(new_data_vec).unwrap();
+                        debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                    }
+
+                    if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
+                        let data_vec = o.get_mut();
+                        data_vec
+                            .push((date.to_pg_epoch_days(), rate))
+                            .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+                    } else {
+                        error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
+                    }
+
+                    entry_count += 1;
+
+                    debug2!(
+                        "Inserted into shared cache: ({},{}) => ({}, {})",
+                        from_id,
+                        to_id,
+                        date,
+                        rate
+                    );
+                }
+            }
+            Err(spi_error) => {
+                error!("Cannot load currency rates. {}", spi_error)
+            }
+        }
+    });
 
     // Ensure items are ordered ASC. Rq. for Binary Search.
     for (_, data_vec) in data_map.iter_mut() {
@@ -700,11 +700,11 @@ mod tests {
     #[pg_test]
     fn test_get_rate_by_id() {
         assert_eq!(
-            Some(0.6782540169620296f64),
-            crate::kq_fx_get_rate(1, 2, pgrx::Date::new(2015, 5, 1).unwrap())
+            Some(1.2092987606763552f64),
+            crate::kq_fx_get_rate(2, 1, pgrx::Date::new(2019, 12, 1).unwrap())
         );
         assert_eq!(
-            Some(1.4450710028764924f64),
+            Some(1.6285458614035657f64),
             crate::kq_fx_get_rate(
                 3590000203070,
                 3590000231158,
@@ -721,7 +721,7 @@ mod tests {
             crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2014, 2, 1).unwrap())
         );
         assert_eq!(
-            Some(1.4450710028764924f64),
+            Some(1.6285458614035657f64),
             // 3590000203070 -> 3590000231158
             crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
         );
