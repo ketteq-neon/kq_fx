@@ -171,7 +171,7 @@ fn ensure_cache_populated() {
         }
         error!("{}", msg);
     }
-    // Init Currencies (id and xuid)
+    // Init Currencies (id and xuid) & lock shmem maps
     let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
     let mut data_map = CURRENCY_DATA_MAP.exclusive();
     let mut currencies_count: i64 = 0;
@@ -230,21 +230,37 @@ fn ensure_cache_populated() {
                         .unwrap_or_else(|err| error!("server interface error - {err}"))
                         .unwrap_or_else(|| error!("cannot get rate"));
 
-                    if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-                            heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-                        v.insert(new_data_vec).unwrap();
-                        debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                    match data_map.entry((from_id, to_id)) {
+                        Entry::Vacant(v) => {
+                            let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                                heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+                            new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
+                            v.insert(new_data_vec).unwrap();
+                            debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                        }
+                        Entry::Occupied(mut o) => {
+                            let data_vec = o.get_mut();
+                            data_vec
+                                .push((date.to_pg_epoch_days(), rate))
+                                .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+                        }
                     }
 
-                    if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
-                        let data_vec = o.get_mut();
-                        data_vec
-                            .push((date.to_pg_epoch_days(), rate))
-                            .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-                    } else {
-                        error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
-                    }
+                    // if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
+                    //     let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                    //         heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+                    //     v.insert(new_data_vec).unwrap();
+                    //     debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                    // }
+                    //
+                    // if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
+                    //     let data_vec = o.get_mut();
+                    //     data_vec
+                    //         .push((date.to_pg_epoch_days(), rate))
+                    //         .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+                    // } else {
+                    //     error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
+                    // }
 
                     entry_count += 1;
 
