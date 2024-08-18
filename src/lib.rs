@@ -10,8 +10,9 @@ use std::time::Duration;
 // Capacity params
 // IMPORTANT: All capacity values MUST be a power of 2. E.g. 2^8 = 256, 2^9 = 512, 2^10 = 1024
 
-const MAX_ENTRIES: usize = 1024;
-const MAX_CURRENCIES: usize = 256;
+const MAX_ENTRIES: usize = 512;
+const MAX_CURRENCIES: usize = 64;
+const MAX_ID_PAIRS: usize = 1024;
 const CURRENCY_XUID_MAX_LEN: usize = 64;
 
 // Default Queries
@@ -86,8 +87,11 @@ type StoreDate = i32;
 type FromToIdPair = (i64, i64);
 type StoreDateRatePair = (StoreDate, f64);
 type CurrencyXuid = heapless::String<CURRENCY_XUID_MAX_LEN>;
-type CurrencyDataMap =
-    heapless::FnvIndexMap<FromToIdPair, heapless::Vec<StoreDateRatePair, MAX_ENTRIES>, MAX_ENTRIES>;
+type CurrencyDataMap = heapless::FnvIndexMap<
+    FromToIdPair,
+    heapless::Vec<StoreDateRatePair, MAX_ENTRIES>,
+    MAX_ID_PAIRS,
+>;
 type CurrencyXuidMap = heapless::FnvIndexMap<CurrencyXuid, i64, MAX_CURRENCIES>;
 
 // Shared Memory Structs
@@ -146,13 +150,12 @@ unsafe fn init_gucs() {
 // Cache management internals
 
 fn ensure_cache_populated() {
-    debug3!("ensure_cache_populated()");
     if CURRENCY_CONTROL.share().cache_filled {
         return;
     }
     if CURRENCY_CONTROL.share().cache_being_filled {
         while CURRENCY_CONTROL.share().cache_being_filled {
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         }
         return;
     }
@@ -205,61 +208,6 @@ fn ensure_cache_populated() {
         }
     });
     let mut entry_count: i64 = 0;
-
-    // Spi::connect(|client| {
-    //     let mut cursor = client.open_cursor(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None);
-    //     let result_data = cursor.fetch(10000).unwrap_or_else(|spi_error| {
-    //         error!("Cannot load currency rates. {}", spi_error)
-    //     });
-    //     result_data.into_iter().for_each(|row| {
-    //         let from_id = row[1]
-    //             .value::<i64>()
-    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //             .unwrap_or_else(|| error!("cannot get from_id"));
-    //
-    //         let to_id = row[2]
-    //             .value::<i64>()
-    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //             .unwrap_or_else(|| error!("cannot get to_id"));
-    //
-    //         let date = row[3]
-    //             .value::<PgDate>()
-    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //             .unwrap_or_else(|| error!("cannot get date"));
-    //
-    //         let rate: f64 = row[4]
-    //             .value::<f64>()
-    //             .unwrap_or_else(|err| error!("server interface error - {err}"))
-    //             .unwrap_or_else(|| error!("cannot get rate"));
-    //
-    //         match data_map.entry((from_id, to_id)) {
-    //             Entry::Vacant(v) => {
-    //                 let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-    //                     heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-    //                 new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
-    //                 v.insert(new_data_vec).unwrap();
-    //                 debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-    //             }
-    //             Entry::Occupied(mut o) => {
-    //                 let data_vec = o.get_mut();
-    //                 data_vec
-    //                     .push((date.to_pg_epoch_days(), rate))
-    //                     .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-    //             }
-    //         }
-    //
-    //         entry_count += 1;
-    //
-    //         debug2!(
-    //                     "Inserted into shared cache: ({},{}) => ({}, {})",
-    //                     from_id,
-    //                     to_id,
-    //                     date,
-    //                     rate
-    //         );
-    //     })
-    // });
-
     Spi::connect(|client| {
         let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, None);
         match select {
@@ -285,37 +233,39 @@ fn ensure_cache_populated() {
                         .unwrap_or_else(|err| error!("server interface error - {err}"))
                         .unwrap_or_else(|| error!("cannot get rate"));
 
-                    // match data_map.entry((from_id, to_id)) {
-                    //     Entry::Vacant(v) => {
-                    //         let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-                    //             heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-                    //         new_data_vec.push((date.to_pg_epoch_days(), rate)).unwrap();
-                    //         v.insert(new_data_vec).unwrap();
-                    //         debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-                    //     }
-                    //     Entry::Occupied(mut o) => {
-                    //         let data_vec = o.get_mut();
-                    //         data_vec
-                    //             .push((date.to_pg_epoch_days(), rate))
-                    //             .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-                    //     }
+                    let entry = (date.to_pg_epoch_days(), rate);
+
+                    match data_map.entry((from_id, to_id)) {
+                        Entry::Vacant(v) => {
+                            let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                                heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+                            new_data_vec.push(entry).unwrap();
+                            v.insert(new_data_vec).unwrap();
+                            debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
+                        }
+                        Entry::Occupied(mut o) => {
+                            let data_vec = o.get_mut();
+                            data_vec
+                                .push(entry)
+                                .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+                        }
+                    }
+
+                    // if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
+                    //     let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
+                    //         heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
+                    //     v.insert(new_data_vec).unwrap();
+                    //     debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
                     // }
 
-                    if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                        let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-                            heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-                        v.insert(new_data_vec).unwrap();
-                        debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-                    }
-
-                    if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
-                        let data_vec = o.get_mut();
-                        data_vec
-                            .push((date.to_pg_epoch_days(), rate))
-                            .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-                    } else {
-                        error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
-                    }
+                    // if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
+                    //     let data_vec = o.get_mut();
+                    //     data_vec
+                    //         .push((date.to_pg_epoch_days(), rate))
+                    //         .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
+                    // } else {
+                    //     error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
+                    // }
 
                     entry_count += 1;
 
@@ -435,7 +385,7 @@ fn kq_fx_display_cache() -> TableIterator<
 #[allow(clippy::comparison_chain)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option<f64> {
     if currency_id == to_currency_id {
-        return Some(1.0)
+        return Some(1.0);
     }
     ensure_cache_populated();
     let date: i32 = date.to_pg_epoch_days();
@@ -586,92 +536,6 @@ fn kq_get_arr_value(
     values.get(pos).copied().or(default_value)
 }
 
-#[pg_extern(parallel_safe)]
-fn kq_get_arr_value2(
-    dates: Vec<PgDate>,
-    values: Vec<f64>,
-    date: PgDate,
-    default_value: Option<f64>,
-) -> Option<f64> {
-    if dates.is_empty() || values.is_empty() {
-        return default_value;
-    }
-
-    if dates.len() != values.len() {
-        error!("dates and values arrays does not have the same quantity of elements")
-    }
-
-    let pos = match dates.binary_search(&date) {
-        Ok(idx) => idx, // exact match
-        Err(idx) => {
-            if idx == 0 {
-                // date precedes first element
-                return default_value;
-            } else {
-                // <= value
-                idx - 1
-            }
-        }
-    };
-
-    values.get(pos).copied().or(default_value)
-}
-
-#[pg_extern(parallel_safe)]
-fn kq_get_arr_value3(
-    dates: Vec<PgDate>,
-    values: Vec<f64>,
-    date: PgDate,
-    default_value: Option<f64>,
-) -> Option<f64> {
-    if dates.is_empty() || values.is_empty() {
-        return default_value;
-    }
-
-    if dates.len() != values.len() {
-        error!("dates and values arrays does not have the same quantity of elements")
-    }
-
-    if dates.first().unwrap() > &date {
-        return default_value;
-    }
-
-    for idx in (0..dates.len()).rev() {
-        if dates[idx] <= date {
-            return values.get(idx).copied();
-        }
-    }
-
-    default_value
-}
-
-#[pg_extern(parallel_safe)]
-fn kq_get_arr_value4(
-    dates: Vec<PgDate>,
-    values: Vec<f64>,
-    date: PgDate,
-    default_value: Option<f64>,
-) -> Option<f64> {
-    if dates.is_empty() || values.is_empty() {
-        return default_value;
-    }
-
-    if dates.len() != values.len() {
-        error!("dates and values arrays does not have the same quantity of elements")
-    }
-
-    let dates: Vec<i32> = dates.iter().map(|date| date.to_pg_epoch_days()).collect();
-    let date = date.to_pg_epoch_days();
-
-    for idx in (0..dates.len()).rev() {
-        if dates[idx] <= date {
-            return values.get(idx).copied();
-        }
-    }
-
-    default_value
-}
-
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
@@ -695,7 +559,6 @@ mod tests {
             crate::kq_fx_get_rate(1, 1, pgrx::Date::new(2015, 5, 1).unwrap())
         );
     }
-
 
     #[pg_test]
     fn test_get_rate_by_id() {
@@ -815,79 +678,6 @@ mod tests {
         // exact date match to the first value in dates
         assert_eq!(
             crate::kq_get_arr_value(
-                dates.clone(),
-                values.clone(),
-                create_date(2000, 1, 1),
-                default_value
-            ),
-            Some(10.0)
-        );
-    }
-
-    #[pg_test]
-    fn test_kq_get_arr_value2() {
-        let dates = vec![
-            create_date(2000, 1, 1),
-            create_date(2000, 1, 2),
-            create_date(2000, 1, 3),
-            create_date(2000, 1, 5),
-            create_date(2000, 1, 8),
-        ];
-        let values = vec![10.0, 20.0, 30.0, 50.0, 80.0];
-        let default_value = Some(0.0);
-        // intermediate date (within range but not an exact match)
-        assert_eq!(
-            crate::kq_get_arr_value2(
-                dates.clone(),
-                values.clone(),
-                create_date(2000, 1, 4),
-                default_value
-            ),
-            Some(30.0)
-        );
-
-        // exact date match
-        assert_eq!(
-            crate::kq_get_arr_value2(
-                dates.clone(),
-                values.clone(),
-                create_date(2000, 1, 8),
-                default_value
-            ),
-            Some(80.0)
-        );
-
-        // date before any value in dates
-        assert_eq!(
-            crate::kq_get_arr_value2(
-                dates.clone(),
-                values.clone(),
-                create_date(1999, 12, 31),
-                default_value
-            ),
-            default_value
-        );
-
-        // date after the last value in dates
-        assert_eq!(
-            crate::kq_get_arr_value2(
-                dates.clone(),
-                values.clone(),
-                create_date(2000, 1, 9),
-                default_value
-            ),
-            Some(80.0)
-        );
-
-        // dates and values empty
-        assert_eq!(
-            crate::kq_get_arr_value2(vec![], vec![], create_date(2000, 1, 9), default_value),
-            default_value
-        );
-
-        // exact date match to the first value in dates
-        assert_eq!(
-            crate::kq_get_arr_value2(
                 dates.clone(),
                 values.clone(),
                 create_date(2000, 1, 1),
