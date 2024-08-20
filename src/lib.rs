@@ -185,7 +185,7 @@ fn ensure_cache_populated() {
 
                     currencies_count += 1;
 
-                    debug1!("Currency initialized. ID: {}, xuid: {}", id, xuid)
+                    debug2!("Currency initialized. ID: {}, xuid: {}", id, xuid)
                 }
             }
             Err(spi_error) => {
@@ -266,7 +266,7 @@ fn ensure_cache_populated() {
         };
     }
 
-    info!("Cache ready, entries: {entry_count}.");
+    debug2!("Cache ready, entries: {entry_count}.");
 }
 
 fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
