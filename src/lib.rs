@@ -312,7 +312,7 @@ fn kq_fx_check_db() -> String {
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
     debug2!("Waiting for lock...");
-    *CURRENCY_XUID_MAP.exclusive() = CurrencyXuidMap::new();
+    CURRENCY_XUID_MAP.exclusive().clear();
     debug2!("CURRENCY_XUID_MAP cleared");
     for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().iter_mut() {
         data_vec.clear();
