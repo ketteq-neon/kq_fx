@@ -38,7 +38,7 @@ CREATE TABLE plan.data_date (
 
 INSERT INTO plan.data_date ("date")
 VALUES
-    (NOW());
+    ('2024-05-08');
 
 INSERT INTO plan.currency (id, xuid,"name",description,"attributes") VALUES
                                                                      (1, 'usd','USD',NULL,NULL),

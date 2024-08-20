@@ -13,7 +13,7 @@ use std::time::Duration;
 const MAX_ENTRIES: usize = 512;
 const MAX_CURRENCIES: usize = 64;
 const MAX_ID_PAIRS: usize = 1024;
-const CURRENCY_XUID_MAX_LEN: usize = 64;
+const CURRENCY_XUID_MAX_LEN: usize = 16;
 
 // Default Queries
 
@@ -21,40 +21,26 @@ const DEFAULT_Q1_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
 FROM information_schema.tables
 WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
 
-const DEFAULT_Q2_GET_CURRENCIES_XUID_INIT: &CStr = cr#"SELECT cu.id, LOWER(cu.xuid)
+const DEFAULT_Q2_GET_CURRENCIES_XUID_INIT: &CStr = cr#"SELECT cu.id, cu.xuid 
 FROM plan.currency cu
 ORDER by cu.id asc;"#;
 
 const DEFAULT_Q3_GET_CURRENCY_ENTRIES: &CStr = cr#"WITH
-	dd AS (
-		SELECT date FROM plan.data_date dd
-	),
-	fx_rate_hist AS (
-    	SELECT
-    		cr.currency_id,
-    		cr.to_currency_id,
-    		cr."date",
-    		cr.rate,
-    		ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY cr."date" DESC) AS rn
-    	FROM
-    		plan.fx_rate cr
-    		INNER JOIN dd ON cr.date < dd."date"
-	),
 	fx_rate AS (
-    	SELECT
-    		cr.currency_id,
-    		cr.to_currency_id,
-    		cr."date",
-    		cr.rate,
-    		ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY cr."date" ASC) AS rn
-    	FROM
-    		plan.fx_rate cr
-    		INNER JOIN dd ON cr.date >= dd."date"
+		SELECT
+			cr.currency_id,
+			cr.to_currency_id,
+			cr."date",
+			cr.rate,
+			ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY "date" DESC) AS rn
+		FROM
+			plan.fx_rate cr
+		ORDER BY
+			1, 2, 3 DESC
 	)
-SELECT currency_id, to_currency_id, date, rate FROM fx_rate_hist WHERE rn <= 312
-UNION ALL
-SELECT currency_id, to_currency_id, date, rate FROM fx_rate WHERE rn <= 312
-ORDER BY 1, 2, 3;"#;
+SELECT currency_id, to_currency_id, date, rate FROM fx_rate WHERE rn <= 512
+ORDER BY 1, 2, 3
+;"#;
 
 // Query GUCs
 
@@ -251,22 +237,6 @@ fn ensure_cache_populated() {
                         }
                     }
 
-                    // if let Entry::Vacant(v) = data_map.entry((from_id, to_id)) {
-                    //     let new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
-                    //         heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
-                    //     v.insert(new_data_vec).unwrap();
-                    //     debug2!("entries vector From_ID: {from_id}, To_ID: {to_id} created");
-                    // }
-
-                    // if let Entry::Occupied(mut o) = data_map.entry((from_id, to_id)) {
-                    //     let data_vec = o.get_mut();
-                    //     data_vec
-                    //         .push((date.to_pg_epoch_days(), rate))
-                    //         .unwrap_or_else(|e| error!("cannot insert more elements into (date, rate) vector, ({},{}, curr: {}, max: {})", e.0, e.1, data_vec.len(), data_vec.capacity()));
-                    // } else {
-                    //     error!("entries vector for From_ID: {from_id}, To_ID: {to_id} cannot be obtained")
-                    // }
-
                     entry_count += 1;
 
                     debug2!(
@@ -393,86 +363,33 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
         .share()
         .get(&(currency_id, to_currency_id))
     {
-        // info!(
-        //     "dates size for {currency_id}, {to_currency_id}: {}",
-        //     dates_rates.len()
-        // );
-        //
-        // let mut cc = 0;
-        // dates_rates.iter().for_each(|&(cache_date, _)| {
-        //     unsafe {
-        //         info!(
-        //             "{cc}: {currency_id}, {to_currency_id}: {}",
-        //             PgDate::from_pg_epoch_days(cache_date)
-        //         );
-        //     }
-        //     cc += 1;
-        // });
-
         let &(first_date, first_rate) = dates_rates.first().unwrap();
         if date < first_date {
-            // unsafe {
-            //     info!(
-            //         "date is prior to first_date: {}, {}",
-            //         PgDate::from_pg_epoch_days(date),
-            //         PgDate::from_pg_epoch_days(first_date)
-            //     );
-            // }
             return None;
         } else if date == first_date {
-            // unsafe {
-            //     info!(
-            //         "date equals first_date {} => {first_date}",
-            //         PgDate::from_pg_epoch_days(first_date)
-            //     );
-            // }
             return Some(first_rate);
         }
         let &(last_date, last_rate) = dates_rates.last().unwrap();
         if date >= last_date {
-            // unsafe {
-            //     info!(
-            //         "date equals or is greater than last_date {} => {last_rate}",
-            //         PgDate::from_pg_epoch_days(last_date)
-            //     );
-            // }
             return Some(last_rate);
         }
         let result = dates_rates.binary_search_by(|&(cache_date, _)| cache_date.cmp(&date));
         match result {
             Ok(index) => {
                 let rate = dates_rates[index].1;
-                // unsafe {
-                //     info!(
-                //         "Found rate exactly with date: {}, rate: {rate}",
-                //         PgDate::from_pg_epoch_days(date)
-                //     );
-                // }
                 Some(rate)
             }
             Err(index) => {
                 if index > 0 {
                     let index = index - 1;
                     let rate = dates_rates[index].1;
-                    // unsafe {
-                    //     let found_date = dates_rates[index].0;
-                    //     let found_date = PgDate::from_pg_epoch_days(found_date);
-                    //     info!("Found previous rate with date: {}, found: {found_date} => {rate}, idx: {index}", PgDate::from_pg_epoch_days(date));
-                    // }
                     Some(rate)
                 } else {
-                    // unsafe {
-                    //     info!("Not found date: {}", PgDate::from_pg_epoch_days(date));
-                    // }
                     None
                 }
             }
         }
     } else {
-        // info!(
-        //     "There are no rates for this currency pair: from_id: {}, to_id: {}.",
-        //     currency_id, to_currency_id
-        // );
         None
     }
 }
@@ -483,8 +400,8 @@ fn kq_fx_get_rate_xuid(
     to_currency_xuid: &'static str,
     date: PgDate,
 ) -> Option<f64> {
-    let currency_xuid = CurrencyXuid::from(currency_xuid.to_lowercase().as_str());
-    let to_currency_xuid = CurrencyXuid::from(to_currency_xuid.to_lowercase().as_str());
+    let currency_xuid = CurrencyXuid::from(currency_xuid);
+    let to_currency_xuid = CurrencyXuid::from(to_currency_xuid);
     ensure_cache_populated();
     let xuid_map = CURRENCY_XUID_MAP.share();
     let from_id = match xuid_map.get(&currency_xuid) {
