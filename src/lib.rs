@@ -17,29 +17,49 @@ const CURRENCY_XUID_MAX_LEN: usize = 16;
 
 // Default Queries
 
-const DEFAULT_Q1_VALIDATION_QUERY: &CStr = cr#"SELECT count(table_name) = 2
-FROM information_schema.tables
-WHERE table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate');"#;
+const DEFAULT_Q1_VALIDATION_QUERY: &CStr = cr#"
+    SELECT
+        count(table_name) = 2
+    FROM
+        information_schema.tables
+    WHERE
+        table_schema = 'plan' AND (table_name = 'currency' or table_name = 'fx_rate')
+;"#;
 
-const DEFAULT_Q2_GET_CURRENCIES_XUID_INIT: &CStr = cr#"SELECT cu.id, cu.xuid 
-FROM plan.currency cu
-ORDER by cu.id asc;"#;
+const DEFAULT_Q2_GET_CURRENCIES_XUID_INIT: &CStr = cr#"
+    SELECT
+        cu.id, cu.xuid
+    FROM
+        plan.currency cu
+    ORDER BY
+        cu.id ASC
+;"#;
 
-const DEFAULT_Q3_GET_CURRENCY_ENTRIES: &CStr = cr#"WITH
-	fx_rate AS (
-		SELECT
-			cr.currency_id,
-			cr.to_currency_id,
-			cr."date",
-			cr.rate,
-			ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY "date" DESC) AS rn
-		FROM
-			plan.fx_rate cr
-		ORDER BY
-			1, 2, 3 DESC
-	)
-SELECT currency_id, to_currency_id, date, rate FROM fx_rate WHERE rn <= 512
-ORDER BY 1, 2, 3
+const DEFAULT_Q3_GET_CURRENCY_ENTRIES: &CStr = cr#"
+    WITH
+        fx_rate AS (
+            SELECT
+                cr.currency_id,
+                cr.to_currency_id,
+                cr."date",
+                cr.rate,
+                ROW_NUMBER() OVER (PARTITION BY currency_id, to_currency_id ORDER BY "date" DESC) AS rn
+            FROM
+                plan.fx_rate cr
+            ORDER BY
+                1, 2, 3 DESC
+        )
+    SELECT
+        currency_id,
+        to_currency_id,
+        date,
+        rate
+    FROM
+        fx_rate
+    WHERE
+        rn <= 512
+    ORDER BY
+        1, 2, 3
 ;"#;
 
 // Query GUCs
@@ -98,12 +118,12 @@ pub extern "C" fn _PG_init() {
     unsafe {
         init_gucs();
     }
-    info!("ketteQ FX Currency Cache Extension Loaded (kq_fx)");
+    info!("ketteQ FX Extension (kq_fx) Loaded");
 }
 
 #[pg_guard]
 pub extern "C" fn _PG_fini() {
-    info!("Unloaded ketteQ FX Currency Cache Extension (kq_fx)");
+    info!("ketteQ FX Extension (kq_fx) Unloaded");
 }
 
 unsafe fn init_gucs() {
@@ -133,35 +153,39 @@ unsafe fn init_gucs() {
     );
 }
 
-// Cache management internals
-
-fn ensure_cache_populated() {
-    if CURRENCY_CONTROL.share().cache_filled {
-        return;
+fn is_cache_filled() {
+    if CALENDAR_CONTROL.share().cache_filled {
+        return true;
     }
+
     if CURRENCY_CONTROL.share().cache_being_filled {
         while CURRENCY_CONTROL.share().cache_being_filled {
             std::thread::sleep(Duration::from_millis(1));
         }
+        return true;
+    }
+
+    return false;
+}
+
+// Cache management internals
+fn ensure_cache_populated() {
+    if is_cache_filled() {
         return;
     }
-    {
-        *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-            cache_filled: false,
-            cache_being_filled: true,
-        };
-    }
-    if let Err(msg) = validate_compatible_db() {
-        {
-            *CURRENCY_CONTROL.exclusive() = CurrencyControl {
-                cache_filled: false,
-                cache_being_filled: false,
-            };
-        }
-        error!("{}", msg);
-    }
-    // Init Currencies (id and xuid) & lock shmem maps
+
+    validate_compatible_db();
+
     let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
+
+    //someone else might have filled it already
+    if is_cache_filled() {
+        return;
+    }
+
+    CALENDAR_CONTROL.exclusive().cache_being_filled = true;
+
+    // Init Currencies (id and xuid) & lock shmem maps
     let mut data_map = CURRENCY_DATA_MAP.exclusive();
     let mut currencies_count: i64 = 0;
     Spi::connect(|client| {
@@ -193,6 +217,7 @@ fn ensure_cache_populated() {
             }
         }
     });
+
     let mut entry_count: i64 = 0;
     Spi::connect(|client| {
         let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, None);
@@ -255,9 +280,11 @@ fn ensure_cache_populated() {
     });
 
     // Ensure items are ordered ASC. Rq. for Binary Search.
+    /*CHECK IF NEEDED AS WE ARE LOADING SORTED DATA
     for (_, data_vec) in data_map.iter_mut() {
         data_vec.sort_by_key(|d| d.0)
     }
+    */
 
     {
         *CURRENCY_CONTROL.exclusive() = CurrencyControl {
@@ -283,11 +310,11 @@ fn validate_compatible_db() -> Result<(), String> {
     match spi_result {
         Ok(found_tables_opt) => match found_tables_opt {
             None => {
-                Err("The current database is not compatible with the KetteQ FX Currency Cache extension.".to_string())
+                Err("The current database is not compatible with the ketteQ FX extension.".to_string())
             }
             Some(valid) => {
                 if !valid {
-                    Err("The current database is not compatible with the KetteQ FX Currency Cache extension.".to_string())
+                    Err("The current database is not compatible with the ketteQ FX extension.".to_string())
                 } else {
                     Ok(())
                 }
@@ -312,19 +339,27 @@ fn kq_fx_check_db() -> String {
 #[pg_extern]
 fn kq_fx_invalidate_cache() -> &'static str {
     debug2!("Waiting for lock...");
-    CURRENCY_XUID_MAP.exclusive().clear();
-    debug2!("CURRENCY_XUID_MAP cleared");
+    let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
+
     for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().iter_mut() {
         data_vec.clear();
     }
+
     CURRENCY_DATA_MAP.exclusive().clear();
-    debug2!("CURRENCY_DATA_MAP cleared");
+
     *CURRENCY_CONTROL.exclusive() = CurrencyControl {
         cache_being_filled: false,
         ..CurrencyControl::default()
     };
-    debug2!("CURRENCY_CONTROL reset");
+
+    xuid_map.clear();
     "Cache invalidated."
+}
+
+#[pg_extern(parallel_safe)]
+fn kq_cx_populate_cache() {
+    ensure_cache_populated()
+    "Cache populated."
 }
 
 #[pg_extern(parallel_safe)]
@@ -357,7 +392,9 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
     if currency_id == to_currency_id {
         return Some(1.0);
     }
+
     ensure_cache_populated();
+
     let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP
         .share()
@@ -402,7 +439,13 @@ fn kq_fx_get_rate_xuid(
 ) -> Option<f64> {
     let currency_xuid = CurrencyXuid::from(currency_xuid);
     let to_currency_xuid = CurrencyXuid::from(to_currency_xuid);
+
+    if currency_xuid.eq(&to_currency_xuid) {
+        return Some(1.0);
+    }
+
     ensure_cache_populated();
+
     let xuid_map = CURRENCY_XUID_MAP.share();
     let from_id = match xuid_map.get(&currency_xuid) {
         None => {
