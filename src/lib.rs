@@ -359,7 +359,7 @@ fn kq_fx_invalidate_cache() -> &'static str {
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_cx_populate_cache() -> &'static str {
+fn kq_fx_populate_cache() -> &'static str {
     ensure_cache_populated();
     "Cache populated."
 }
