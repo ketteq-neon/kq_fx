@@ -76,8 +76,19 @@ static Q3_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 // Activate PostgreSQL Extension
 ::pgrx::pg_module_magic!();
 
-// Control Struct
+extension_sql!(
+    "\
+CREATE TYPE DateValuePair AS (
+    \"date\" Date,
+    value FLOAT8
+);",
+    name = "create_composites",
+    bootstrap
+);
 
+const DATE_VALUE_PAIR_COMPOSITE_TYPE: &str = "DateValuePair";
+
+// Control Struct
 #[derive(Clone, Default)]
 pub struct CurrencyControl {
     cache_filled: bool,
@@ -499,34 +510,44 @@ fn kq_get_arr_value(
     values.get(pos).copied().or(default_value)
 }
 
-// #[pg_extern(parallel_safe)]
-// fn kq_get_arr_value_2(
-//     pairs: Vec<(PgDate, f64)>,
-//     date: PgDate,
-//     default_value: Option<f64>,
-// ) -> Option<f64> {
-//     if pairs.is_empty() {
-//         return default_value;
-//     }
+#[pg_extern(parallel_safe)]
+fn kq_get_arr_value_2(
+    pairs: Vec<pgrx::composite_type!(DATE_VALUE_PAIR_COMPOSITE_TYPE)>,
+    date: PgDate,
+    default_value: Option<f64>,
+) -> Option<f64> {
+    if pairs.is_empty() {
+        return default_value;
+    }
 
-//     let dates: Vec<i32> = pairs.iter().map(|pair| pair.0.to_pg_epoch_days()).collect();
-//     let date = date.to_pg_epoch_days();
+    let pairs: Vec<(i32, f64)> = pairs.iter().map(|pair| {
+        let date = pair.get_by_name::<PgDate>("date").unwrap().unwrap().to_pg_epoch_days();
+        let value = pair.get_by_name::<f64>("value").unwrap().unwrap();
+        (date, value)
+    }).collect();
 
-//     let pos = match dates.binary_search(&date) {
-//         Ok(idx) => idx, // exact match
-//         Err(idx) => {
-//             if idx == 0 {
-//                 // date precedes first element
-//                 return default_value;
-//             } else {
-//                 // <= value
-//                 idx - 1
-//             }
-//         }
-//     };
+    let dates: Vec<i32> = pairs.iter().map(|pair| pair.0).collect();
 
-//     pairs.get(pos).1.copied().or(default_value)
-// }
+    let date = date.to_pg_epoch_days();
+
+    let pos = match dates.binary_search(&date) {
+        Ok(idx) => idx, // exact match
+        Err(idx) => {
+            if idx == 0 {
+                // date precedes first element
+                return default_value;
+            } else {
+                // <= value
+                idx - 1
+            }
+        }
+    };
+
+    match pairs.get(pos) {
+        Some(pair) => Some(pair.1),
+        None => default_value,
+    }
+}
 
 
 #[cfg(any(test, feature = "pg_test"))]
