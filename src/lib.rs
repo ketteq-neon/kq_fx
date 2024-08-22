@@ -3,7 +3,7 @@ use pgrx::lwlock::PgLwLock;
 use pgrx::prelude::*;
 use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
-use pgrx::{debug1, error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
+use pgrx::{error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::CStr;
 use std::time::Duration;
 
@@ -153,8 +153,8 @@ unsafe fn init_gucs() {
     );
 }
 
-fn is_cache_filled() {
-    if CALENDAR_CONTROL.share().cache_filled {
+fn is_cache_filled() -> bool {
+    if CURRENCY_CONTROL.share().cache_filled {
         return true;
     }
 
@@ -165,7 +165,7 @@ fn is_cache_filled() {
         return true;
     }
 
-    return false;
+    false
 }
 
 // Cache management internals
@@ -174,7 +174,9 @@ fn ensure_cache_populated() {
         return;
     }
 
-    validate_compatible_db();
+    if let Err(msg) = validate_compatible_db() {
+        error!("{}", msg);
+    }
 
     let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
 
@@ -183,7 +185,7 @@ fn ensure_cache_populated() {
         return;
     }
 
-    CALENDAR_CONTROL.exclusive().cache_being_filled = true;
+    CURRENCY_CONTROL.exclusive().cache_being_filled = true;
 
     // Init Currencies (id and xuid) & lock shmem maps
     let mut data_map = CURRENCY_DATA_MAP.exclusive();
@@ -357,8 +359,8 @@ fn kq_fx_invalidate_cache() -> &'static str {
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_cx_populate_cache() {
-    ensure_cache_populated()
+fn kq_fx_populate_cache() -> &'static str {
+    ensure_cache_populated();
     "Cache populated."
 }
 
