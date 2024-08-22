@@ -499,34 +499,34 @@ fn kq_get_arr_value(
     values.get(pos).copied().or(default_value)
 }
 
-#[pg_extern(parallel_safe)]
-fn kq_get_arr_value(
-    pairs: Vec<(PgDate, f64)>,
-    date: PgDate,
-    default_value: Option<f64>,
-) -> Option<f64> {
-    if pairs.is_empty() {
-        return default_value;
-    }
+// #[pg_extern(parallel_safe)]
+// fn kq_get_arr_value_2(
+//     pairs: Vec<(PgDate, f64)>,
+//     date: PgDate,
+//     default_value: Option<f64>,
+// ) -> Option<f64> {
+//     if pairs.is_empty() {
+//         return default_value;
+//     }
 
-    let dates: Vec<i32> = pairs.iter().map(|pair| pair.0.to_pg_epoch_days()).collect();
-    let date = date.to_pg_epoch_days();
+//     let dates: Vec<i32> = pairs.iter().map(|pair| pair.0.to_pg_epoch_days()).collect();
+//     let date = date.to_pg_epoch_days();
 
-    let pos = match dates.binary_search(&date) {
-        Ok(idx) => idx, // exact match
-        Err(idx) => {
-            if idx == 0 {
-                // date precedes first element
-                return default_value;
-            } else {
-                // <= value
-                idx - 1
-            }
-        }
-    };
+//     let pos = match dates.binary_search(&date) {
+//         Ok(idx) => idx, // exact match
+//         Err(idx) => {
+//             if idx == 0 {
+//                 // date precedes first element
+//                 return default_value;
+//             } else {
+//                 // <= value
+//                 idx - 1
+//             }
+//         }
+//     };
 
-    pairs.get(pos).1.copied().or(default_value)
-}
+//     pairs.get(pos).1.copied().or(default_value)
+// }
 
 
 #[cfg(any(test, feature = "pg_test"))]
