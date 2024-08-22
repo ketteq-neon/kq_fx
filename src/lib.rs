@@ -464,6 +464,7 @@ fn kq_fx_get_rate_xuid(
     kq_fx_get_rate(*from_id, *to_id, date)
 }
 
+
 #[pg_extern(parallel_safe)]
 fn kq_get_arr_value(
     dates: Vec<PgDate>,
