@@ -30,7 +30,15 @@ CREATE TABLE plan.fx_rate (
 ALTER TABLE plan.fx_rate ADD CONSTRAINT fx_rate_currency_id_fk FOREIGN KEY (currency_id) REFERENCES plan.currency(id) ON DELETE CASCADE;
 ALTER TABLE plan.fx_rate ADD CONSTRAINT fx_rate_to_currency_id_fk FOREIGN KEY (to_currency_id) REFERENCES plan.currency(id) ON DELETE CASCADE;
 
+CREATE TABLE plan.data_date (
+    "date" DATE NOT NULL
+);
+
 -- TEST DATA
+
+INSERT INTO plan.data_date ("date")
+VALUES
+    ('2024-05-08');
 
 INSERT INTO plan.currency (id, xuid,"name",description,"attributes") VALUES
                                                                      (1, 'usd','USD',NULL,NULL),
