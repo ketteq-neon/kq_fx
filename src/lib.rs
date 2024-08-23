@@ -78,15 +78,15 @@ static Q3_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
 
 extension_sql!(
     "\
-CREATE TYPE DateValuePair AS (
-    \"date\" Date,
-    value FLOAT8
+CREATE TYPE kq_date_value AS (
+    \"date\" date,
+    value float8
 );",
     name = "create_composites",
     bootstrap
 );
 
-const DATE_VALUE_PAIR_COMPOSITE_TYPE: &str = "DateValuePair";
+const KQ_DATE_VALUE_COMPOSITE_TYPE: &str = "kq_date_value";
 
 // Control Struct
 #[derive(Clone, Default)]
@@ -292,13 +292,6 @@ fn ensure_cache_populated() {
         }
     });
 
-    // Ensure items are ordered ASC. Rq. for Binary Search.
-    /*CHECK IF NEEDED AS WE ARE LOADING SORTED DATA
-    for (_, data_vec) in data_map.iter_mut() {
-        data_vec.sort_by_key(|d| d.0)
-    }
-    */
-
     {
         *CURRENCY_CONTROL.exclusive() = CurrencyControl {
             cache_filled: true,
@@ -477,7 +470,7 @@ fn kq_fx_get_rate_xuid(
 
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value(
+fn kq_get_value_from_arrays(
     dates: Vec<PgDate>,
     values: Vec<f64>,
     date: PgDate,
@@ -511,8 +504,8 @@ fn kq_get_arr_value(
 }
 
 #[pg_extern(parallel_safe)]
-fn kq_get_arr_value_2(
-    pairs: Vec<pgrx::composite_type!(DATE_VALUE_PAIR_COMPOSITE_TYPE)>,
+fn kq_get_value_from_pairs(
+    pairs: Vec<pgrx::composite_type!(KQ_DATE_VALUE_COMPOSITE_TYPE)>,
     date: PgDate,
     default_value: Option<f64>,
 ) -> Option<f64> {
