@@ -5,6 +5,7 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::CStr;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 // Capacity params
@@ -315,20 +316,21 @@ fn validate_compatible_db() -> Result<(), String> {
     let spi_result: SpiResult<Option<bool>> = Spi::get_one(&get_guc_string(&Q1_VALIDATION_QUERY));
     match spi_result {
         Ok(found_tables_opt) => match found_tables_opt {
-            None => {
-                Err("The current database is not compatible with the ketteQ FX extension.".to_string())
-            }
+            None => Err(
+                "The current database is not compatible with the ketteQ FX extension.".to_string(),
+            ),
             Some(valid) => {
                 if !valid {
-                    Err("The current database is not compatible with the ketteQ FX extension.".to_string())
+                    Err(
+                        "The current database is not compatible with the ketteQ FX extension."
+                            .to_string(),
+                    )
                 } else {
                     Ok(())
                 }
             }
         },
-        Err(spi_error) => {
-            Err(format!("Cannot validate current database. {}", spi_error))
-        }
+        Err(spi_error) => Err(format!("Cannot validate current database. {}", spi_error)),
     }
 }
 
@@ -468,7 +470,6 @@ fn kq_fx_get_rate_xuid(
     kq_fx_get_rate(*from_id, *to_id, date)
 }
 
-
 #[pg_extern(parallel_safe)]
 fn kq_get_value_from_arrays(
     dates: Vec<PgDate>,
@@ -513,11 +514,23 @@ fn kq_get_value_from_pairs(
         return default_value;
     }
 
-    let pairs: Vec<(i32, f64)> = pairs.iter().map(|pair| {
-        let date = pair.get_by_name::<PgDate>("date").unwrap().unwrap().to_pg_epoch_days();
-        let value = pair.get_by_name::<f64>("value").unwrap().unwrap();
-        (date, value)
-    }).collect();
+    let pairs: Vec<(i32, f64)> = pairs
+        .iter()
+        .map(|pair| unsafe {
+            let date = pair
+                .get_by_index::<PgDate>(NonZeroUsize::new_unchecked(1))
+                .unwrap()
+                .unwrap()
+                .to_pg_epoch_days();
+            let value = pair
+                .get_by_index::<f64>(NonZeroUsize::new_unchecked(2))
+                .unwrap()
+                .unwrap();
+            // let date = pair.get_by_name::<PgDate>("date").unwrap().unwrap().to_pg_epoch_days();
+            // let value = pair.get_by_name::<f64>("value").unwrap().unwrap();
+            (date, value)
+        })
+        .collect();
 
     let dates: Vec<i32> = pairs.iter().map(|pair| pair.0).collect();
 
@@ -541,7 +554,6 @@ fn kq_get_value_from_pairs(
         None => default_value,
     }
 }
-
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
@@ -622,7 +634,7 @@ mod tests {
     }
 
     #[pg_test]
-    fn test_kq_get_arr_value() {
+    fn test_kq_get_value_from_arrays() {
         let dates = vec![
             create_date(2000, 1, 1),
             create_date(2000, 1, 2),
@@ -634,7 +646,7 @@ mod tests {
         let default_value = Some(0.0);
         // intermediate date (within range but not an exact match)
         assert_eq!(
-            crate::kq_get_arr_value(
+            crate::kq_get_value_from_arrays(
                 dates.clone(),
                 values.clone(),
                 create_date(2000, 1, 4),
@@ -645,7 +657,7 @@ mod tests {
 
         // exact date match
         assert_eq!(
-            crate::kq_get_arr_value(
+            crate::kq_get_value_from_arrays(
                 dates.clone(),
                 values.clone(),
                 create_date(2000, 1, 8),
@@ -656,7 +668,7 @@ mod tests {
 
         // date before any value in dates
         assert_eq!(
-            crate::kq_get_arr_value(
+            crate::kq_get_value_from_arrays(
                 dates.clone(),
                 values.clone(),
                 create_date(1999, 12, 31),
@@ -667,7 +679,7 @@ mod tests {
 
         // date after the last value in dates
         assert_eq!(
-            crate::kq_get_arr_value(
+            crate::kq_get_value_from_arrays(
                 dates.clone(),
                 values.clone(),
                 create_date(2000, 1, 9),
@@ -678,13 +690,13 @@ mod tests {
 
         // dates and values empty
         assert_eq!(
-            crate::kq_get_arr_value(vec![], vec![], create_date(2000, 1, 9), default_value),
+            crate::kq_get_value_from_arrays(vec![], vec![], create_date(2000, 1, 9), default_value),
             default_value
         );
 
         // exact date match to the first value in dates
         assert_eq!(
-            crate::kq_get_arr_value(
+            crate::kq_get_value_from_arrays(
                 dates.clone(),
                 values.clone(),
                 create_date(2000, 1, 1),
@@ -692,6 +704,91 @@ mod tests {
             ),
             Some(10.0)
         );
+    }
+
+    #[pg_test]
+    fn test_kq_get_value_from_pairs() -> Result<(), pgrx::spi::Error> {
+        let date_pairs_sql = r#"
+            ARRAY[
+                ROW('2000-01-01'::date, 10.0)::kq_date_value, 
+                ROW('2000-01-02'::date, 20.0)::kq_date_value,
+                ROW('2000-01-03'::date, 30.0)::kq_date_value,
+                ROW('2000-01-05'::date, 50.0)::kq_date_value,
+                ROW('2000-01-08'::date, 80.0)::kq_date_value
+            ]
+        "#
+        .replace("\n", " ");
+
+        // intermediate date (within range but not an exact match)
+        let retval = Spi::get_one::<f64>(
+            format!(
+                "\
+            SELECT * FROM kq_get_value_from_pairs({date_pairs_sql}, '2000-01-04'::date, 0)
+        "
+            )
+            .as_str(),
+        )?
+        .expect("failed executing SQL");
+        assert_eq!(retval, 30.0f64);
+
+        // exact date match
+        let retval = Spi::get_one::<f64>(
+            format!(
+                "\
+            SELECT * FROM kq_get_value_from_pairs({date_pairs_sql}, '2000-01-08'::date, 0)
+        "
+            )
+            .as_str(),
+        )?
+        .expect("failed executing SQL");
+        assert_eq!(retval, 80.0f64);
+
+        // date before any value in dates
+        let retval = Spi::get_one::<f64>(
+            format!(
+                "\
+            SELECT * FROM kq_get_value_from_pairs({date_pairs_sql}, '1999-12-31'::date, 0)
+        "
+            )
+            .as_str(),
+        )?
+        .expect("failed executing SQL");
+        assert_eq!(retval, 0.0f64);
+
+        // date after the last value in dates
+        let retval = Spi::get_one::<f64>(
+            format!(
+                "\
+            SELECT * FROM kq_get_value_from_pairs({date_pairs_sql}, '2000-01-09'::date, 0)
+        "
+            )
+            .as_str(),
+        )?
+        .expect("failed executing SQL");
+        assert_eq!(retval, 80.0f64);
+
+        // dates pairs empty
+        let retval = Spi::get_one::<f64>(
+            "\
+            SELECT * FROM kq_get_value_from_pairs(ARRAY[]::kq_date_value[], '2000-01-09'::date, 0)
+        ",
+        )?
+        .expect("failed executing SQL");
+        assert_eq!(retval, 0.0f64);
+
+        // exact date match to the first value in dates
+        let retval = Spi::get_one::<f64>(
+            format!(
+                "\
+            SELECT * FROM kq_get_value_from_pairs({date_pairs_sql}, '2000-01-01'::date, 0)
+        "
+            )
+            .as_str(),
+        )?
+        .expect("failed executing SQL");
+        assert_eq!(retval, 10.0f64);
+
+        Ok(())
     }
 }
 
