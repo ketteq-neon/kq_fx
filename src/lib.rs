@@ -514,25 +514,16 @@ fn kq_get_value_from_pairs(
         return default_value;
     }
 
-    let pairs: Vec<(i32, f64)> = pairs
+    let dates: Vec<i32> = pairs
         .iter()
         .map(|pair| unsafe {
-            let date = pair
+            pair
                 .get_by_index::<PgDate>(NonZeroUsize::new_unchecked(1))
                 .unwrap()
                 .unwrap()
-                .to_pg_epoch_days();
-            let value = pair
-                .get_by_index::<f64>(NonZeroUsize::new_unchecked(2))
-                .unwrap()
-                .unwrap();
-            // let date = pair.get_by_name::<PgDate>("date").unwrap().unwrap().to_pg_epoch_days();
-            // let value = pair.get_by_name::<f64>("value").unwrap().unwrap();
-            (date, value)
+                .to_pg_epoch_days()
         })
         .collect();
-
-    let dates: Vec<i32> = pairs.iter().map(|pair| pair.0).collect();
 
     let date = date.to_pg_epoch_days();
 
