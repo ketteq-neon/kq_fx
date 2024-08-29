@@ -517,8 +517,7 @@ fn kq_get_value_from_pairs(
     let dates: Vec<i32> = pairs
         .iter()
         .map(|pair| unsafe {
-            pair
-                .get_by_index::<PgDate>(NonZeroUsize::new_unchecked(1))
+            pair.get_by_index::<PgDate>(NonZeroUsize::new_unchecked(1))
                 .unwrap()
                 .unwrap()
                 .to_pg_epoch_days()
@@ -541,7 +540,13 @@ fn kq_get_value_from_pairs(
     };
 
     match pairs.get(pos) {
-        Some(pair) => Some(pair.1),
+        Some(pair) => unsafe {
+            let value = pair
+                .get_by_index::<f64>(NonZeroUsize::new_unchecked(2))
+                .unwrap()
+                .unwrap();
+            Some(value)
+        },
         None => default_value,
     }
 }
