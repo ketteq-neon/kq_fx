@@ -4,6 +4,8 @@ use pgrx::prelude::*;
 use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
+use serde::Deserialize;
+use serde::Serialize;
 use std::ffi::CStr;
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -504,6 +506,51 @@ fn kq_get_value_from_arrays(
     values.get(pos).copied().or(default_value)
 }
 
+#[derive(PostgresType, Serialize, Deserialize, Clone)]
+pub struct DateValue {
+    date: PgDate,
+    value: f64,
+}
+
+#[pg_extern(parallel_safe)]
+fn kq_get_value_from_custom_type(
+    date_values: Vec<DateValue>,
+    date: PgDate,
+    default_value: Option<f64>,
+) -> Option<f64> {
+    if date_values.is_empty() {
+        return default_value;
+    }
+
+    let dates: Vec<i32> = date_values
+    .iter()
+    .map(|date_value| {
+        date_value.date.to_pg_epoch_days()
+    })
+    .collect();
+
+    let date = date.to_pg_epoch_days();
+
+    let pos = match dates.binary_search(&date) {
+        Ok(idx) => idx, // exact match
+        Err(idx) => {
+            if idx == 0 {
+                // date precedes first element
+                return default_value;
+            } else {
+                // <= value
+                idx - 1
+            }
+        }
+    };
+
+    if let Some(date_value) = date_values.get(pos) {
+        Some(date_value.value)
+    } else {
+        default_value
+    }
+}
+
 #[pg_extern(parallel_safe)]
 fn kq_get_value_from_pairs(
     pairs: Vec<pgrx::composite_type!(KQ_DATE_VALUE_COMPOSITE_TYPE)>,
@@ -555,6 +602,8 @@ fn kq_get_value_from_pairs(
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
+
+    use crate::DateValue;
 
     extension_sql_file!("../sql/test_data.sql");
 
@@ -785,6 +834,89 @@ mod tests {
         assert_eq!(retval, 10.0f64);
 
         Ok(())
+    }
+
+    #[pg_test]
+    fn test_kq_get_value_from_custom_type() {
+        let date_values = vec![
+            DateValue {
+                date: create_date(2000, 1, 1),
+                value: 10.0
+            },
+            DateValue {
+                date: create_date(2000, 1, 2),
+                value: 20.0
+            },
+            DateValue {
+                date: create_date(2000, 1, 3),
+                value: 30.0
+            },
+            DateValue {
+                date: create_date(2000, 1, 5),
+                value: 50.0
+            },
+            DateValue {
+                date: create_date(2000, 1, 8),
+                value: 80.0
+            },
+        ];
+        let default_value = Some(0.0);
+
+        // intermediate date (within range but not an exact match)
+        assert_eq!(
+            crate::kq_get_value_from_custom_type(
+                date_values.clone(),
+                create_date(2000, 1, 4),
+                default_value
+            ),
+            Some(30.0)
+        );
+
+        // exact date match
+        assert_eq!(
+            crate::kq_get_value_from_custom_type(
+                date_values.clone(),
+                create_date(2000, 1, 8),
+                default_value
+            ),
+            Some(80.0)
+        );
+
+        // date before any value in dates
+        assert_eq!(
+            crate::kq_get_value_from_custom_type(
+                date_values.clone(),
+                create_date(1999, 12, 31),
+                default_value
+            ),
+            default_value
+        );
+
+        // date after the last value in dates
+        assert_eq!(
+            crate::kq_get_value_from_custom_type(
+                date_values.clone(),
+                create_date(2000, 1, 9),
+                default_value
+            ),
+            Some(80.0)
+        );
+
+        // dates and values empty
+        assert_eq!(
+            crate::kq_get_value_from_custom_type(vec![], create_date(2000, 1, 9), default_value),
+            default_value
+        );
+
+        // exact date match to the first value in dates
+        assert_eq!(
+            crate::kq_get_value_from_custom_type(
+                date_values,
+                create_date(2000, 1, 1),
+                default_value
+            ),
+            Some(10.0)
+        );
     }
 }
 
