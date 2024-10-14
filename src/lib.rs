@@ -388,7 +388,7 @@ fn kq_fx_display_cache() -> TableIterator<
     TableIterator::new(result_vec)
 }
 
-#[pg_extern(parallel_safe)]
+#[pg_extern(parallel_safe, immutable)]
 #[allow(clippy::comparison_chain)]
 fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option<f64> {
     if currency_id == to_currency_id {
@@ -433,7 +433,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
     }
 }
 
-#[pg_extern(parallel_safe)]
+#[pg_extern(parallel_safe, immutable)]
 fn kq_fx_get_rate_xuid(
     currency_xuid: &'static str,
     to_currency_xuid: &'static str,
@@ -465,7 +465,7 @@ fn kq_fx_get_rate_xuid(
 }
 
 
-#[pg_extern(parallel_safe)]
+#[pg_extern(parallel_safe, immutable)]
 fn kq_get_arr_value(
     dates: Vec<PgDate>,
     values: Vec<f64>,
@@ -498,35 +498,6 @@ fn kq_get_arr_value(
 
     values.get(pos).copied().or(default_value)
 }
-
-// #[pg_extern(parallel_safe)]
-// fn kq_get_arr_value_2(
-//     pairs: Vec<(PgDate, f64)>,
-//     date: PgDate,
-//     default_value: Option<f64>,
-// ) -> Option<f64> {
-//     if pairs.is_empty() {
-//         return default_value;
-//     }
-
-//     let dates: Vec<i32> = pairs.iter().map(|pair| pair.0.to_pg_epoch_days()).collect();
-//     let date = date.to_pg_epoch_days();
-
-//     let pos = match dates.binary_search(&date) {
-//         Ok(idx) => idx, // exact match
-//         Err(idx) => {
-//             if idx == 0 {
-//                 // date precedes first element
-//                 return default_value;
-//             } else {
-//                 // <= value
-//                 idx - 1
-//             }
-//         }
-//     };
-
-//     pairs.get(pos).1.copied().or(default_value)
-// }
 
 
 #[cfg(any(test, feature = "pg_test"))]
