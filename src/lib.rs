@@ -5,6 +5,7 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::CStr;
+use std::str::FromStr;
 use std::time::Duration;
 
 // Capacity params
@@ -88,7 +89,7 @@ unsafe impl PGRXSharedMemory for CurrencyControl {}
 
 // Types
 
-type PgDate = pgrx::Date;
+type PgDate = pgrx::datum::Date;
 type StoreDate = i32;
 type FromToIdPair = (i64, i64);
 type StoreDateRatePair = (StoreDate, f64);
@@ -205,7 +206,7 @@ fn ensure_cache_populated() {
                         .unwrap_or_else(|err| error!("server interface error - {err}"))
                         .unwrap_or_else(|| error!("cannot get currency_xuid"));
 
-                    let xuid_str = CurrencyXuid::from(xuid.as_str());
+                    let xuid_str = CurrencyXuid::from(heapless::String::from_str(xuid.as_str()).unwrap());
 
                     xuid_map.insert(xuid_str, id).unwrap();
 
@@ -380,7 +381,7 @@ fn kq_fx_display_cache() -> TableIterator<
         .iter()
         .flat_map(|((from_id, to_id), data_vec)| {
             data_vec.iter().map(move |date_rate| unsafe {
-                let date = pgrx::Date::from_pg_epoch_days(date_rate.0);
+                let date = pgrx::datum::Date::from_pg_epoch_days(date_rate.0);
                 (*from_id, *to_id, date, date_rate.1)
             })
         })
@@ -435,12 +436,12 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
 
 #[pg_extern(parallel_safe, immutable)]
 fn kq_fx_get_rate_xuid(
-    currency_xuid: &'static str,
-    to_currency_xuid: &'static str,
+    currency_xuid: String,
+    to_currency_xuid: String,
     date: PgDate,
 ) -> Option<f64> {
-    let currency_xuid = CurrencyXuid::from(currency_xuid);
-    let to_currency_xuid = CurrencyXuid::from(to_currency_xuid);
+    let currency_xuid = CurrencyXuid::from(heapless::String::from_str(currency_xuid.as_str()).unwrap());
+    let to_currency_xuid = CurrencyXuid::from(heapless::String::from_str(to_currency_xuid.as_str()).unwrap());
 
     if currency_xuid.eq(&to_currency_xuid) {
         return Some(1.0);
@@ -505,6 +506,8 @@ fn kq_get_arr_value(
 mod tests {
     use pgrx::prelude::*;
 
+    use crate::PgDate;
+
     extension_sql_file!("../sql/test_data.sql");
 
     #[pg_test]
@@ -520,7 +523,7 @@ mod tests {
     fn test_get_rate_same_id() {
         assert_eq!(
             Some(1.0),
-            crate::kq_fx_get_rate(1, 1, pgrx::Date::new(2015, 5, 1).unwrap())
+            crate::kq_fx_get_rate(1, 1, PgDate::new(2015, 5, 1).unwrap())
         );
     }
 
@@ -528,14 +531,14 @@ mod tests {
     fn test_get_rate_by_id() {
         assert_eq!(
             Some(1.2092987606763552f64),
-            crate::kq_fx_get_rate(2, 1, pgrx::Date::new(2019, 12, 1).unwrap())
+            crate::kq_fx_get_rate(2, 1, PgDate::new(2019, 12, 1).unwrap())
         );
         assert_eq!(
             Some(1.6285458614035657f64),
             crate::kq_fx_get_rate(
                 3590000203070,
                 3590000231158,
-                pgrx::Date::new(2030, 1, 10).unwrap()
+                PgDate::new(2030, 1, 10).unwrap()
             )
         );
     }
@@ -545,12 +548,12 @@ mod tests {
         assert_eq!(
             Some(0.7335380076416401f64),
             // 1 -> 2
-            crate::kq_fx_get_rate_xuid("usd", "cad", pgrx::Date::new(2014, 2, 1).unwrap())
+            crate::kq_fx_get_rate_xuid("usd".to_string(), "cad".to_string(), PgDate::new(2014, 2, 1).unwrap())
         );
         assert_eq!(
             Some(1.6285458614035657f64),
             // 3590000203070 -> 3590000231158
-            crate::kq_fx_get_rate_xuid("aud", "nzd", pgrx::Date::new(2030, 1, 10).unwrap())
+            crate::kq_fx_get_rate_xuid("aud".to_string(), "nzd".to_string(), PgDate::new(2030, 1, 10).unwrap())
         );
     }
 
@@ -558,7 +561,7 @@ mod tests {
     fn test_try_get_less_than_min_date() {
         assert_eq!(
             None,
-            crate::kq_fx_get_rate(2, 1, pgrx::Date::new(1999, 1, 1).unwrap())
+            crate::kq_fx_get_rate(2, 1, PgDate::new(1999, 1, 1).unwrap())
         );
     }
 
@@ -569,13 +572,13 @@ mod tests {
             crate::kq_fx_get_rate(
                 2,
                 1,
-                pgrx::Date::new(2100, 1, 1).unwrap() // Max Date: 2024-03-01
+                PgDate::new(2100, 1, 1).unwrap() // Max Date: 2024-03-01
             )
         );
     }
 
-    fn create_date(year: i32, month: u8, day: u8) -> Date {
-        Date::new(year, month, day).expect("Failed to create date")
+    fn create_date(year: i32, month: u8, day: u8) -> PgDate {
+        PgDate::new(year, month, day).expect("Failed to create date")
     }
 
     #[pg_test]
