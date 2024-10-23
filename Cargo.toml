@@ -9,17 +9,18 @@ authors = [ 'Giancarlo A. Chiappe' ]
 crate-type = ["cdylib"]
 
 [features]
-default = ["pg15"]
-pg15 = ["pgrx/pg15", "pgrx-tests/pg15" ]
+default = ["pg17"]
+# pg15 = ["pgrx/pg15", "pgrx-tests/pg15" ]
 pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
+pg17 = ["pgrx/pg17", "pgrx-tests/pg17" ]
 pg_test = []
 
 [dependencies]
 heapless = "=0.7.17"
-pgrx = { version =  "=0.11.4", default-features = false, features = ["unsafe-postgres"] }
+pgrx = { version =  "=0.12.6", default-features = false, features = ["unsafe-postgres"] }
 
 [dev-dependencies]
-pgrx-tests = "0.11.4"
+pgrx-tests = "0.12.6"
 
 [profile.dev]
 panic = "unwind"
