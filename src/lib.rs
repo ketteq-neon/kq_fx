@@ -206,7 +206,8 @@ fn ensure_cache_populated() {
                         .unwrap_or_else(|err| error!("server interface error - {err}"))
                         .unwrap_or_else(|| error!("cannot get currency_xuid"));
 
-                    let xuid_str = CurrencyXuid::from(heapless::String::from_str(xuid.as_str()).unwrap());
+                    let xuid_str =
+                        CurrencyXuid::from(heapless::String::from_str(xuid.as_str()).unwrap());
 
                     xuid_map.insert(xuid_str, id).unwrap();
 
@@ -312,20 +313,21 @@ fn validate_compatible_db() -> Result<(), String> {
     let spi_result: SpiResult<Option<bool>> = Spi::get_one(&get_guc_string(&Q1_VALIDATION_QUERY));
     match spi_result {
         Ok(found_tables_opt) => match found_tables_opt {
-            None => {
-                Err("The current database is not compatible with the ketteQ FX extension.".to_string())
-            }
+            None => Err(
+                "The current database is not compatible with the ketteQ FX extension.".to_string(),
+            ),
             Some(valid) => {
                 if !valid {
-                    Err("The current database is not compatible with the ketteQ FX extension.".to_string())
+                    Err(
+                        "The current database is not compatible with the ketteQ FX extension."
+                            .to_string(),
+                    )
                 } else {
                     Ok(())
                 }
             }
         },
-        Err(spi_error) => {
-            Err(format!("Cannot validate current database. {}", spi_error))
-        }
+        Err(spi_error) => Err(format!("Cannot validate current database. {}", spi_error)),
     }
 }
 
@@ -440,8 +442,10 @@ fn kq_fx_get_rate_xuid(
     to_currency_xuid: String,
     date: PgDate,
 ) -> Option<f64> {
-    let currency_xuid = CurrencyXuid::from(heapless::String::from_str(currency_xuid.as_str()).unwrap());
-    let to_currency_xuid = CurrencyXuid::from(heapless::String::from_str(to_currency_xuid.as_str()).unwrap());
+    let currency_xuid =
+        CurrencyXuid::from(heapless::String::from_str(currency_xuid.as_str()).unwrap());
+    let to_currency_xuid =
+        CurrencyXuid::from(heapless::String::from_str(to_currency_xuid.as_str()).unwrap());
 
     if currency_xuid.eq(&to_currency_xuid) {
         return Some(1.0);
@@ -464,7 +468,6 @@ fn kq_fx_get_rate_xuid(
     };
     kq_fx_get_rate(*from_id, *to_id, date)
 }
-
 
 #[pg_extern(parallel_safe, immutable)]
 fn kq_get_arr_value(
@@ -500,7 +503,6 @@ fn kq_get_arr_value(
     values.get(pos).copied().or(default_value)
 }
 
-
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
@@ -528,6 +530,11 @@ mod tests {
     }
 
     #[pg_test]
+    fn test_always_ok() {
+        assert!(1 == 1);
+    }
+
+    #[pg_test]
     fn test_get_rate_by_id() {
         assert_eq!(
             Some(1.2092987606763552f64),
@@ -548,12 +555,20 @@ mod tests {
         assert_eq!(
             Some(0.7335380076416401f64),
             // 1 -> 2
-            crate::kq_fx_get_rate_xuid("usd".to_string(), "cad".to_string(), PgDate::new(2014, 2, 1).unwrap())
+            crate::kq_fx_get_rate_xuid(
+                "usd".to_string(),
+                "cad".to_string(),
+                PgDate::new(2014, 2, 1).unwrap()
+            )
         );
         assert_eq!(
             Some(1.6285458614035657f64),
             // 3590000203070 -> 3590000231158
-            crate::kq_fx_get_rate_xuid("aud".to_string(), "nzd".to_string(), PgDate::new(2030, 1, 10).unwrap())
+            crate::kq_fx_get_rate_xuid(
+                "AUD".to_string(),
+                "NZD".to_string(),
+                PgDate::new(2030, 1, 10).unwrap()
+            )
         );
     }
 
@@ -661,7 +676,10 @@ mod tests {
 pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {
         // perform one-off initialization when the pg_test framework starts
+        println!("configuring tests")
     }
+
+    #[must_use]
     pub fn postgresql_conf_options() -> Vec<&'static str> {
         vec![
             "shared_preload_libraries = 'kq_fx'",

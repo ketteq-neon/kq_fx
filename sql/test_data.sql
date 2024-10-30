@@ -44,8 +44,8 @@ INSERT INTO plan.currency (id, xuid,"name",description,"attributes") VALUES
                                                                      (1, 'usd','USD',NULL,NULL),
                                                                      (2, 'cad','CAD',NULL,NULL),
                                                                      (3, 'eur','EUR',NULL,NULL),
-                                                                     (3590000231158, 'NZD','NZD',NULL,NULL),
-                                                                     (3590000203070, 'AUD','AUD',NULL,NULL);
+                                                                     (3590000231158, 'nzd','NZD',NULL,NULL),
+                                                                     (3590000203070, 'aud','AUD',NULL,NULL);
 
 INSERT INTO plan.fx_rate (currency_id,to_currency_id,"date",rate) VALUES
                                                                       (2,1,'2023-11-01',1.3709),
