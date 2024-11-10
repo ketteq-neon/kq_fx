@@ -21,10 +21,10 @@ pg_test = []
 
 [dependencies]
 heapless = "0.8"
-pgrx = { version =  "0.12.7", default-features = false }
+pgrx = { version =  "0.12.8", default-features = false }
 
 [dev-dependencies]
-pgrx-tests = "0.12.7"
+pgrx-tests = "0.12.8"
 
 [profile.dev]
 panic = "unwind"
