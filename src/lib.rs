@@ -565,8 +565,8 @@ mod tests {
             Some(1.6285458614035657f64),
             // 3590000203070 -> 3590000231158
             crate::kq_fx_get_rate_xuid(
-                "AUD".to_string(),
-                "NZD".to_string(),
+                "aud".to_string(),
+                "nzd".to_string(),
                 PgDate::new(2030, 1, 10).unwrap()
             )
         );
