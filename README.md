@@ -20,7 +20,7 @@ executing the `CREATE EXTENSION` query.
 
 The PGRX build system allows to target different PostgreSQL version automatically adjusting the output for them.
 
-Supported by this extension: PostgreSQL 17 (default) and 16.
+Supported by this extension: PostgreSQL 17 (default), 16 and 15.
 
 See the Build section to target a different PostgreSQL version, please note that if you use the automatic installer
 provided by the PGRX crate it will use the correct target PostgreSQL version.
@@ -54,7 +54,7 @@ The extension will load currency conversion data from specific tables stored in 
 - `cargo b --release`
 - The shared library will be located in the `./target/release` folder.
 
-To set a specific target PostgreSQL version, add `pg17` or `pg16` at the end of the `cargo pgrx schema` command.
+To set a specific target PostgreSQL version, add `pg17` or `pg15`/`pg16` at the end of the `cargo pgrx schema` command.
 
 ## Install
 
