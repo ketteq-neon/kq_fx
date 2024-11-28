@@ -6,20 +6,25 @@ publish = false
 authors = [ 'Giancarlo A. Chiappe' ]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "pgrx_embed_kq_fx"
+path = "./src/bin/pgrx_embed.rs"
 
 [features]
-default = ["pg15"]
+default = ["pg17"]
 pg15 = ["pgrx/pg15", "pgrx-tests/pg15" ]
 pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
+pg17 = ["pgrx/pg17", "pgrx-tests/pg17" ]
 pg_test = []
 
 [dependencies]
-heapless = "=0.7.17"
-pgrx = { version =  "=0.11.4", default-features = false, features = ["unsafe-postgres"] }
+heapless = "0.8"
+pgrx = { version =  "0.12.8", default-features = false }
 
 [dev-dependencies]
-pgrx-tests = "0.11.4"
+pgrx-tests = "0.12.8"
 
 [profile.dev]
 panic = "unwind"
