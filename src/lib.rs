@@ -5,6 +5,7 @@ use pgrx::shmem::*;
 use pgrx::spi::SpiResult;
 use pgrx::{error, pg_shmem_init, GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -64,15 +65,14 @@ const DEFAULT_Q3_GET_CURRENCY_ENTRIES: &CStr = cr#"
 ;"#;
 
 // Query GUCs
+type GucStrSetting = GucSetting<Option<CString>>;
+static Q1_VALIDATION_QUERY: GucStrSetting = GucStrSetting::new(Some(DEFAULT_Q1_VALIDATION_QUERY));
 
-static Q1_VALIDATION_QUERY: GucSetting<Option<&'static CStr>> =
-    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q1_VALIDATION_QUERY));
+static Q2_GET_CURRENCIES_XUID_INIT: GucStrSetting =
+    GucStrSetting::new(Some(DEFAULT_Q2_GET_CURRENCIES_XUID_INIT));
 
-static Q2_GET_CURRENCIES_XUID_INIT: GucSetting<Option<&'static CStr>> =
-    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q2_GET_CURRENCIES_XUID_INIT));
-
-static Q3_GET_CURRENCY_ENTRIES: GucSetting<Option<&'static CStr>> =
-    GucSetting::<Option<&'static CStr>>::new(Some(DEFAULT_Q3_GET_CURRENCY_ENTRIES));
+static Q3_GET_CURRENCY_ENTRIES: GucStrSetting =
+    GucStrSetting::new(Some(DEFAULT_Q3_GET_CURRENCY_ENTRIES));
 
 // Activate PostgreSQL Extension
 ::pgrx::pg_module_magic!();
@@ -94,25 +94,35 @@ type StoreDate = i32;
 type FromToIdPair = (i64, i64);
 type StoreDateRatePair = (StoreDate, f64);
 type CurrencyXuid = heapless::String<CURRENCY_XUID_MAX_LEN>;
-type CurrencyDataMap = heapless::FnvIndexMap<
-    FromToIdPair,
-    heapless::Vec<StoreDateRatePair, MAX_ENTRIES>,
-    MAX_ID_PAIRS,
->;
-type CurrencyXuidMap = heapless::FnvIndexMap<CurrencyXuid, i64, MAX_CURRENCIES>;
+
+#[derive(Default)]
+struct CurrencyDataMap(
+    heapless::FnvIndexMap<
+        FromToIdPair,
+        heapless::Vec<StoreDateRatePair, MAX_ENTRIES>,
+        MAX_ID_PAIRS,
+    >,
+);
+
+#[derive(Default)]
+struct CurrencyXuidMap(heapless::FnvIndexMap<CurrencyXuid, i64, MAX_CURRENCIES>);
+
+unsafe impl PGRXSharedMemory for CurrencyXuidMap {}
+
+unsafe impl PGRXSharedMemory for CurrencyDataMap {}
 
 // Shared Memory Structs
 
-static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = PgLwLock::new();
+static CURRENCY_CONTROL: PgLwLock<CurrencyControl> = unsafe { PgLwLock::new(c"CurrencyControl") };
 /// CURRENCY_ID => CURRENCY_XUID
-static CURRENCY_XUID_MAP: PgLwLock<CurrencyXuidMap> = PgLwLock::new();
+static CURRENCY_XUID_MAP: PgLwLock<CurrencyXuidMap> = unsafe { PgLwLock::new(c"CurrencyXuidMap") };
 /// (FROM_CURRENCY_ID, TO_CURRENCY_ID) => (DATE, RATE)
-static CURRENCY_DATA_MAP: PgLwLock<CurrencyDataMap> = PgLwLock::new();
+static CURRENCY_DATA_MAP: PgLwLock<CurrencyDataMap> = unsafe { PgLwLock::new(c"CurrencyDataMap") };
 
 // Init Extension
 
 #[pg_guard]
-pub extern "C" fn _PG_init() {
+pub extern "C-unwind" fn _PG_init() {
     pg_shmem_init!(CURRENCY_CONTROL);
     pg_shmem_init!(CURRENCY_XUID_MAP);
     pg_shmem_init!(CURRENCY_DATA_MAP);
@@ -123,31 +133,31 @@ pub extern "C" fn _PG_init() {
 }
 
 #[pg_guard]
-pub extern "C" fn _PG_fini() {
+pub extern "C-unwind" fn _PG_fini() {
     info!("ketteQ FX Extension (kq_fx) Unloaded");
 }
 
 unsafe fn init_gucs() {
     GucRegistry::define_string_guc(
-        "kq.currency.q1_validation",
-        "Query to validate the current schema in order to create the ketteQ FX Currency Cache Extension.",
-        "",
+        c"kq.currency.q1_validation",
+        c"Query to validate the current schema in order to create the ketteQ FX Currency Cache Extension.",
+        c"",
         &Q1_VALIDATION_QUERY,
         GucContext::Suset,
         GucFlags::empty()
     );
     GucRegistry::define_string_guc(
-        "kq.currency.q2_get_currencies_xuid",
-        "Query to get the currencies IDs and XUIDs.",
-        "",
+        c"kq.currency.q2_get_currencies_xuid",
+        c"Query to get the currencies IDs and XUIDs.",
+        c"",
         &Q2_GET_CURRENCIES_XUID_INIT,
         GucContext::Suset,
         GucFlags::empty(),
     );
     GucRegistry::define_string_guc(
-        "kq.currency.q3_get_currency_entries",
-        "Query to actually get the currencies and store it in the shared memory cache.",
-        "",
+        c"kq.currency.q3_get_currency_entries",
+        c"Query to actually get the currencies and store it in the shared memory cache.",
+        c"",
         &Q3_GET_CURRENCY_ENTRIES,
         GucContext::Suset,
         GucFlags::empty(),
@@ -192,7 +202,7 @@ fn ensure_cache_populated() {
     let mut data_map = CURRENCY_DATA_MAP.exclusive();
     let mut currencies_count: i64 = 0;
     Spi::connect(|client| {
-        let select = client.select(&get_guc_string(&Q2_GET_CURRENCIES_XUID_INIT), None, None);
+        let select = client.select(&get_guc_string(&Q2_GET_CURRENCIES_XUID_INIT), None, &[]);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
@@ -209,7 +219,7 @@ fn ensure_cache_populated() {
                     let xuid_str =
                         CurrencyXuid::from(heapless::String::from_str(xuid.as_str()).unwrap());
 
-                    xuid_map.insert(xuid_str, id).unwrap();
+                    xuid_map.0.insert(xuid_str, id).unwrap();
 
                     currencies_count += 1;
 
@@ -224,7 +234,7 @@ fn ensure_cache_populated() {
 
     let mut entry_count: i64 = 0;
     Spi::connect(|client| {
-        let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, None);
+        let select = client.select(&crate::get_guc_string(&Q3_GET_CURRENCY_ENTRIES), None, &[]);
         match select {
             Ok(tuple_table) => {
                 for row in tuple_table {
@@ -250,7 +260,7 @@ fn ensure_cache_populated() {
 
                     let entry = (date.to_pg_epoch_days(), rate);
 
-                    match data_map.entry((from_id, to_id)) {
+                    match data_map.0.entry((from_id, to_id)) {
                         Entry::Vacant(v) => {
                             let mut new_data_vec: heapless::Vec<StoreDateRatePair, MAX_ENTRIES> =
                                 heapless::Vec::<StoreDateRatePair, MAX_ENTRIES>::new();
@@ -300,7 +310,7 @@ fn ensure_cache_populated() {
     debug2!("Cache ready, entries: {entry_count}.");
 }
 
-fn get_guc_string(guc: &GucSetting<Option<&'static CStr>>) -> String {
+fn get_guc_string(guc: &GucStrSetting) -> String {
     let value = String::from_utf8_lossy(guc.get().expect("Cannot get GUC value.").to_bytes())
         .to_string()
         .replace('\n', " ");
@@ -346,18 +356,18 @@ fn kq_fx_invalidate_cache() -> &'static str {
     debug2!("Waiting for lock...");
     let mut xuid_map = CURRENCY_XUID_MAP.exclusive();
 
-    for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().iter_mut() {
+    for (_, data_vec) in CURRENCY_DATA_MAP.exclusive().0.iter_mut() {
         data_vec.clear();
     }
 
-    CURRENCY_DATA_MAP.exclusive().clear();
+    CURRENCY_DATA_MAP.exclusive().0.clear();
 
     *CURRENCY_CONTROL.exclusive() = CurrencyControl {
         cache_being_filled: false,
         ..CurrencyControl::default()
     };
 
-    xuid_map.clear();
+    xuid_map.0.clear();
     "Cache invalidated."
 }
 
@@ -380,6 +390,7 @@ fn kq_fx_display_cache() -> TableIterator<
     ensure_cache_populated();
     let result_vec: Vec<(_, _, _, _)> = CURRENCY_DATA_MAP
         .share()
+        .0
         .iter()
         .flat_map(|((from_id, to_id), data_vec)| {
             data_vec.iter().map(move |date_rate| unsafe {
@@ -403,6 +414,7 @@ fn kq_fx_get_rate(currency_id: i64, to_currency_id: i64, date: PgDate) -> Option
     let date: i32 = date.to_pg_epoch_days();
     if let Some(dates_rates) = CURRENCY_DATA_MAP
         .share()
+        .0
         .get(&(currency_id, to_currency_id))
     {
         let &(first_date, first_rate) = dates_rates.first().unwrap();
@@ -454,13 +466,13 @@ fn kq_fx_get_rate_xuid(
     ensure_cache_populated();
 
     let xuid_map = CURRENCY_XUID_MAP.share();
-    let from_id = match xuid_map.get(&currency_xuid) {
+    let from_id = match xuid_map.0.get(&currency_xuid) {
         None => {
             error!("From currency xuid not found: {currency_xuid}")
         }
         Some(currency_id) => currency_id,
     };
-    let to_id = match xuid_map.get(&to_currency_xuid) {
+    let to_id = match xuid_map.0.get(&to_currency_xuid) {
         None => {
             error!("Target currency xuid not found: {to_currency_xuid}")
         }
