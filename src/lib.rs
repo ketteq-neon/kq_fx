@@ -677,6 +677,24 @@ fn kq_get_arr_value(
 //     }
 // }
 
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+mod tests {
+    use pgrx::prelude::*;
+
+    extension_sql_file!("../sql/test_data.sql");
+
+    // #[pg_test]
+    // fn test_validate_db() {
+    //     // crate::kq_fx_invalidate_cache();
+    //     assert_eq!(
+    //         "Test Execution",
+    //         "Test Execution"
+    //         //crate::kq_fx_check_db()
+    //     );
+    // }
+}
+
 // This module is required by `cargo pgrx test` invocations.
 // It must be visible at the root of your extension crate.
 #[cfg(test)]
